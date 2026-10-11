@@ -36,14 +36,27 @@ DEFAULT_NOTIFY_CHANNELS = {
     "urgent_enabled": True,
     "wecom": {"enabled": False, "corp_id": "", "agent_id": "", "secret": "", "user_id": ""},
     "dingtalk": {"enabled": False, "webhook": "", "secret": ""},
+    "wechat_bot": {"enabled": False, "bot_id": "", "secret": "", "chat_id": "", "chat_type": "single"},
+    "email": {
+        "enabled": False,
+        "host": "",
+        "port": "465",
+        "username": "",
+        "password": "",
+        "sender": "",
+        "receiver": "",
+    },
     "bark": {"enabled": False, "device_key": "", "server": "https://api.day.app"},
     "ntfy": {"enabled": False, "topic": "", "server": "https://ntfy.sh"},
 }
 
 MAX_LOG_BYTES = 1 * 1024 * 1024  # 单份运行日志最多 1MB，超出轮转
 MAX_HISTORY_BYTES = 5 * 1024 * 1024  # 价格历史最多 5MB，超出轮转保留 1 份
-TASK_STAGGER_MIN = 10  # 任务间错峰（秒）
-TASK_STAGGER_MAX = 30
+TASK_STAGGER_MIN = 10  # 查询组之间错峰（秒）
+TASK_STAGGER_MAX = 35
+PAIR_STAGGER_MIN = 4  # 同一组（往返）内相邻请求间隔（秒）
+PAIR_STAGGER_MAX = 7
+ROUND_TRIP_GAP_DAYS = 4  # 同航线相邻日期间隔不超过该天数视为同一组往返（与前端任务列表分组一致）
 
 
 DEFAULT_CONFIG = {
@@ -210,7 +223,8 @@ def expand_dates(task: Dict[str, Any]) -> List[str]:
             except ValueError:
                 continue
         if out:
-            return sorted(set(out))
+            disabled = {str(d).strip() for d in (task.get("disabled_dates") or []) if str(d).strip()}
+            return [d for d in sorted(set(out)) if d not in disabled]
 
     start = str(task.get("date", "") or "").strip()
     end = str(task.get("date_end", "") or "").strip() or start
@@ -229,6 +243,117 @@ def expand_dates(task: Dict[str, Any]) -> List[str]:
         dates.append(cur.isoformat())
         cur += timedelta(days=1)
     return dates
+
+
+def _task_codes(task: Dict[str, Any]) -> tuple:
+    from_code = str(task.get("from_code", "")).strip().upper()
+    to_code = str(task.get("to_code", "")).strip().upper()
+    fare_type = str(task.get("fare_type", "normal")).strip().lower()
+    if fare_type not in ("normal", "plus"):
+        fare_type = "normal"
+    return from_code, to_code, fare_type
+
+
+def _target_price(task: Dict[str, Any]) -> int:
+    try:
+        return int(task.get("target_price", 199))
+    except (TypeError, ValueError):
+        return 199
+
+
+def _day_gap(a: str, b: str) -> int | None:
+    try:
+        return (datetime.strptime(b, "%Y-%m-%d") - datetime.strptime(a, "%Y-%m-%d")).days
+    except ValueError:
+        return None
+
+
+def build_query_units(tasks: List[Dict[str, Any]], today: str | None = None) -> List[List[Dict[str, Any]]]:
+    """把任务展开成本轮要发的请求，并按往返分组。
+
+    - 每个请求是一个 (出发, 到达, 日期, 档位)，同一请求只发一次，挂上所有关注它的任务；
+    - 早于今天的日期不再查询；
+    - 同一航线（不分方向）同档位、相邻日期间隔 ≤ ROUND_TRIP_GAP_DAYS 的请求归为一组，
+      组内先去程（组内最早日期的方向）后回程、各自按日期；只有一个方向的组即单程；
+    - 组按最早日期排序，近的先查。
+    """
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    requests_by_key: Dict[tuple, Dict[str, Any]] = {}
+    for task in tasks:
+        from_code, to_code, fare_type = _task_codes(task)
+        if not (from_code and to_code):
+            continue
+        for date in expand_dates(task):
+            if _day_gap(today, date) is not None and date < today:
+                continue
+            key = (from_code, to_code, date, fare_type)
+            req = requests_by_key.setdefault(
+                key,
+                {"from_code": from_code, "to_code": to_code, "date": date, "fare_type": fare_type, "tasks": []},
+            )
+            if all(t is not task for t in req["tasks"]):
+                req["tasks"].append(task)
+
+    routes: Dict[tuple, List[Dict[str, Any]]] = {}
+    for req in requests_by_key.values():
+        route_key = (tuple(sorted((req["from_code"], req["to_code"]))), req["fare_type"])
+        routes.setdefault(route_key, []).append(req)
+
+    units: List[List[Dict[str, Any]]] = []
+    for items in routes.values():
+        items.sort(key=lambda r: r["date"])
+        clusters: List[List[Dict[str, Any]]] = []
+        for req in items:
+            gap = _day_gap(clusters[-1][-1]["date"], req["date"]) if clusters else None
+            if gap is not None and gap <= ROUND_TRIP_GAP_DAYS:
+                clusters[-1].append(req)
+            else:
+                clusters.append([req])
+        for cluster in clusters:
+            out_dir = (cluster[0]["from_code"], cluster[0]["to_code"])
+            cluster.sort(key=lambda r: ((r["from_code"], r["to_code"]) != out_dir, r["date"]))
+            units.append(cluster)
+    units.sort(key=lambda unit: unit[0]["date"])
+    return units
+
+
+def _companion_text(unit: List[Dict[str, Any]], req: Dict[str, Any], results: Dict[tuple, Dict[str, Any]]) -> str:
+    """往返组里命中一段时，描述另一段（最近那天）的查询结果。单程组返回空串。"""
+    out_dir = (unit[0]["from_code"], unit[0]["to_code"])
+    is_out = (req["from_code"], req["to_code"]) == out_dir
+    others = [r for r in unit if ((r["from_code"], r["to_code"]) == out_dir) != is_out]
+    if not others:
+        return ""
+    if is_out:
+        later = [r for r in others if r["date"] > req["date"]]
+        other = min(later or others, key=lambda r: r["date"])
+    else:
+        earlier = [r for r in others if r["date"] < req["date"]]
+        other = max(earlier or others, key=lambda r: r["date"])
+    label = "回程" if is_out else "去程"
+    head = (
+        f"{label} {other['date'][5:].replace('-', '/')} "
+        f"{code_to_city_only(other['from_code'])}→{code_to_city_only(other['to_code'])}"
+    )
+    result = results.get((other["from_code"], other["to_code"], other["date"]))
+    if result is None:
+        return f"{head}：本轮未查到结果"
+    fares = {str(item.get("flight", "")).strip().upper(): item for item in result.get("fares") or []}
+    parts = []
+    for task in other["tasks"]:
+        flight = str(task.get("flight_no", "") or "").strip().upper()
+        if not flight:
+            continue
+        item = fares.get(flight)
+        if not item or not isinstance(item.get("price"), int):
+            parts.append(f"{flight} 暂无可兑票")
+            continue
+        mark = "也达标 ✅" if item["price"] <= _target_price(task) else "未达标"
+        parts.append(f"{flight} {item['price']} 元（{_seat_summary(item)}，{mark}）")
+    if not parts:
+        cheapest = [item["price"] for item in fares.values() if isinstance(item.get("price"), int)]
+        parts.append(f"最低 {min(cheapest)} 元" if cheapest else "暂无可兑票")
+    return f"{head}：{'；'.join(parts)}"
 
 
 def sleep_with_status_check(seconds: int, check_interval: int) -> None:
@@ -408,76 +533,84 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
     state_mgr.prune_old()
 
     saw_prices = False
-    # 本轮查询缓存：同一 (出发|到达|日期|档位) 只请求一次接口。
-    # 穷举模式下同航线不同时刻的航班各自成任务，避免同一航线/日期被重复抓价。
-    queried: Dict[tuple, tuple] = {}
     history_seen: set = set()
 
-    for index, task in enumerate(tasks):
-        task_id = str(task.get("id", ""))
-        # 任务指定了航班号时，只监控该航班（穷举模式下每个时刻的任务只提醒自己的航班）
-        task_flight = str(task.get("flight_no", "") or "").strip().upper()
-
-        from_code = str(task.get("from_code", "")).strip().upper()
-        to_code = str(task.get("to_code", "")).strip().upper()
-        fare_type = str(task.get("fare_type", "normal")).strip().lower()
-        if fare_type not in ("normal", "plus"):
-            fare_type = "normal"
-        fare_label = "PLUS专享" if fare_type == "plus" else "普通票价"
-
-        try:
-            target_price = int(task.get("target_price", 199))
-        except (TypeError, ValueError):
-            target_price = 199
-
-        dates = expand_dates(task)
-        if not dates:
+    # 先剔除参数不全 / 凭证退避中的任务，其余展开成请求并按往返分组。
+    runnable: List[Dict[str, Any]] = []
+    for task in tasks:
+        from_code, to_code, _ = _task_codes(task)
+        if not expand_dates(task):
             append_log(f"任务缺少日期，已跳过：{task}")
             continue
         if not (from_code and to_code):
             append_log(f"任务参数不完整，已跳过：{task}")
             continue
-        if len(dates) > 15:
-            append_log(f"任务为一日期区间（共 {len(dates)} 天），每轮将逐日查询。")
-
-        # 凭证失败退避：仍在退避窗口内的任务直接跳过本轮。
-        _, next_ok_ts = state_mgr.get_task_backoff(task_id)
+        _, next_ok_ts = state_mgr.get_task_backoff(str(task.get("id", "")))
         if next_ok_ts > time.time():
             remain = int(next_ok_ts - time.time())
-            append_log(f"任务退避中（剩余约 {remain} 秒），跳过本轮。")
+            append_log(f"任务 {task.get('flight_no') or task.get('id')} 退避中（剩余约 {remain} 秒），跳过本轮。")
             continue
+        runnable.append(task)
 
-        # 任务级错峰：>1 条任务时，任务之间随机等待，避免连发。
-        if index > 0:
+    units = build_query_units(runnable)
+    if not units:
+        append_log("所有监控日期都已过去，本轮没有要查的。")
+        return False
+    # 组的先后每轮打乱，避免固定顺序被识别；组内仍是先去程后回程。
+    random.shuffle(units)
+    pushed_count = 0
+
+    for unit_index, unit in enumerate(units):
+        if unit_index > 0:
             stagger = random.randint(TASK_STAGGER_MIN, TASK_STAGGER_MAX)
-            append_log(f"任务间错峰 {stagger} 秒…")
+            append_log(f"组间错峰 {stagger} 秒…")
             time.sleep(stagger)
 
-        from_city = code_to_city_only(from_code)
-        to_city = code_to_city_only(to_code)
-        pushed_count = 0
+        out_dir = (unit[0]["from_code"], unit[0]["to_code"])
+        is_round = any((r["from_code"], r["to_code"]) != out_dir for r in unit)
+        span = unit[0]["date"][5:].replace("-", "/")
+        last_day = max(r["date"] for r in unit)[5:].replace("-", "/")
+        if last_day != span:
+            span = f"{span}–{last_day}"
+        a_city, b_city = code_to_city_only(out_dir[0]), code_to_city_only(out_dir[1])
+        append_log(
+            f"{'往返' if is_round else '单程'}组：{a_city}{'↔' if is_round else '→'}{b_city} {span}"
+            f"（{len(unit)} 次查询）"
+        )
 
-        for date in dates:
-            append_log(f"查询任务：{date} | {from_city}({from_code})->{to_city}({to_code}) | {fare_label} | 目标<= {target_price}")
+        results: Dict[tuple, Dict[str, Any]] = {}
+        hits: List[Dict[str, Any]] = []
 
-            # 本轮同航线/日期/档位已查过则直接复用结果（穷举模式下多任务共享一次抓价）
-            cache_key = (from_code, to_code, date, fare_type)
-            reuse = cache_key in queried
+        for req_index, req in enumerate(unit):
+            if req_index > 0:
+                gap = random.randint(PAIR_STAGGER_MIN, PAIR_STAGGER_MAX)
+                time.sleep(gap)
+
+            from_code, to_code, date, fare_type = req["from_code"], req["to_code"], req["date"], req["fare_type"]
+            fare_label = "PLUS专享" if fare_type == "plus" else "普通票价"
+            from_city = code_to_city_only(from_code)
+            to_city = code_to_city_only(to_code)
+            watched = [str(t.get("flight_no", "") or "").strip().upper() for t in req["tasks"]]
+            watched_text = "、".join(f for f in watched if f) or "全部航班"
+            targets = sorted({_target_price(t) for t in req["tasks"]})
+            leg_label = "" if not is_round else ("去程 " if (from_code, to_code) == out_dir else "回程 ")
+            append_log(
+                f"查询任务：{leg_label}{date} | {from_city}({from_code})->{to_city}({to_code}) | {fare_label}"
+                f" | 监控 {watched_text} | 目标<= {'/'.join(str(t) for t in targets)}"
+            )
+
             try:
-                if reuse:
-                    status, fares = queried[cache_key]
-                else:
-                    status, fares = fetch_price_status(
-                        from_code=from_code,
-                        to_code=to_code,
-                        date=date,
-                        fare_type=fare_type,
-                    )
-                    queried[cache_key] = (status, fares)
+                status, fares = fetch_price_status(
+                    from_code=from_code,
+                    to_code=to_code,
+                    date=date,
+                    fare_type=fare_type,
+                )
             except TokenExpiredError as exc:
-                state_mgr.mark_task_failure(task_id)
+                for task in req["tasks"]:
+                    state_mgr.mark_task_failure(str(task.get("id", "")))
                 reason = str(exc)
-                append_log(f"[鉴权失败] {reason}（该任务进入退避）")
+                append_log(f"[鉴权失败] {reason}（本轮中止，相关任务进入退避）")
 
                 if state_mgr.should_send_token_alert():
                     if wechat_enabled:
@@ -501,40 +634,40 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
                     append_log("已发送 Token 过期高优先级告警。")
                 else:
                     append_log("Token 告警处于冷却期，跳过重复推送。")
-                break
+                return saw_prices
 
             if status == "network":
-                if not reuse:
-                    append_log("请求失败（网络不通 / 网关错误 / 429 限流），本轮跳过。")
+                append_log("请求失败（网络不通 / 网关错误 / 429 限流），本轮跳过。")
                 continue
             if status == "parse":
-                if not reuse:
-                    append_log("接口返回结构异常（非 JSON 或字段变化），本轮跳过。")
+                append_log("接口返回结构异常（非 JSON 或字段变化），本轮跳过。")
                 continue
+            results[(from_code, to_code, date)] = {"fares": fares or []}
             if not fares:
-                if not reuse:
-                    append_log("接口正常返回但无可用航班（无票或价格不可购）。")
+                append_log("接口正常返回但无可用航班（无票或价格不可购）。")
                 continue
 
-            # 取到价格：任务恢复，清零退避计数。
-            if not reuse:
-                state_mgr.mark_task_success(task_id)
-                saw_prices = True
+            saw_prices = True
+            for task in req["tasks"]:
+                state_mgr.mark_task_success(str(task.get("id", "")))
 
+            by_flight = {str(item.get("flight", "UNKNOWN")).strip().upper(): item for item in fares}
             for item in fares:
-                flight = str(item.get("flight", "UNKNOWN"))
-                # 任务指定了航班号：只检查该航班（不同时刻各自成任务的穷举模式下避免串提醒）
-                if task_flight and flight.strip().upper() != task_flight:
-                    continue
                 price = item.get("price")
                 if not isinstance(price, int):
                     continue
-
-                seat_text = _seat_summary(item)
-                append_log(f"{flight} | {price} 元 | {seat_text}")
+                flight = str(item.get("flight", "UNKNOWN"))
+                history_key = f"{from_code}|{to_code}|{date}|{flight}"
+                if history_key in history_seen:
+                    continue
+                history_seen.add(history_key)
+                owner = next(
+                    (t for t in req["tasks"] if str(t.get("flight_no", "") or "").strip().upper() == flight.strip().upper()),
+                    None,
+                )
                 history_record = {
                     "ts": datetime.now().isoformat(timespec="seconds"),
-                    "task_id": task_id,
+                    "task_id": str(owner.get("id", "")) if owner else "",
                     "date": date,
                     "from": from_code,
                     "to": to_code,
@@ -544,70 +677,101 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
                     # 档位（会员专享产品 666/2666/66666…；普通可购价无 tiers 字段）
                     "tiers": item.get("tiers") or [],
                     # 起降时刻：优先实时接口带出的 times，其次任务快照（旧记录可能都没有）
-                    "dep_time": (item.get("times") or {}).get("dep") or str(task.get("dep_time", "") or "").strip(),
-                    "arr_time": (item.get("times") or {}).get("arr") or str(task.get("arr_time", "") or "").strip(),
+                    "dep_time": (item.get("times") or {}).get("dep") or str((owner or {}).get("dep_time", "") or "").strip(),
+                    "arr_time": (item.get("times") or {}).get("arr") or str((owner or {}).get("arr_time", "") or "").strip(),
                 }
                 if item.get("seats") is not None:
                     history_record["seats"] = item.get("seats")
                     history_record["cabins"] = item.get("cabins") or []
-                history_key = f"{from_code}|{to_code}|{date}|{flight}"
-                if history_key not in history_seen:
-                    history_seen.add(history_key)
-                    append_history(history_record)
+                append_history(history_record)
 
-                if price <= target_price and _task_seat_ok(task, item) and _task_tier_ok(task, item):
-                    # 提醒用“命中当天”的任务视图：正文显示具体日期，指纹含日期可避免区间内重复推送。
-                    alert_task = dict(task)
-                    alert_task["date"] = date
-                    alert_task["date_end"] = str(task.get("date_end", "") or "")
-                    fingerprint = _build_fingerprint(alert_task, flight, price)
-                    if state_mgr.should_alert(fingerprint):
-                        # 保留 Server酱（向后兼容；公众号开关关闭时跳过）
-                        if wechat_enabled:
-                            send_price_alert(send_keys, alert_task, flight, price, tiers=item.get("tiers"))
-                        else:
-                            append_log("微信公众号通知已停用，跳过 Server酱低价提醒。")
-                        # 多通道通知：飞书交互卡片（确认/忽略回调）+ 企微/钉钉/Bark/ntfy
-                        cabin_extra = ""
-                        cabin_raw = task.get("cabins")
-                        if isinstance(cabin_raw, (list, tuple)):
-                            cabin_list = [str(c).strip().upper() for c in cabin_raw if str(c).strip()]
-                        elif isinstance(cabin_raw, str):
-                            cabin_list = [c.strip().upper() for c in cabin_raw.split(",") if c.strip()]
-                        else:
-                            cabin_list = []
-                        if cabin_list:
-                            cabin_extra = f"，舱位条件：{'、'.join(cabin_list)}"
-                        alert_title = f"🎉 {from_city}→{to_city} {price} 元"
-                        alert_content = (
-                            f"航班：{flight}\n"
-                            f"日期：{date}\n"
-                            f"航线：{from_city}({from_code}) → {to_city}({to_code})\n"
-                            f"类型：{fare_label}（目标 ≤ {target_price} 元，已达标 ✅）\n"
-                            f"档位：{tier_text(item.get('tiers'))}\n"
-                            f"价格：{price} 元\n"
-                            f"余票：{seat_text}{cabin_extra}"
-                        )
-                        card = build_confirm_card(
-                            alert_title, alert_content, callback_key="price_alert", action_value=fingerprint
-                        )
-                        notify_results = notify_channels(
-                            cfg=notify_cfg,
-                            level="important",
-                            title=alert_title,
-                            content=alert_content,
-                            card=card,
-                            history_path=NOTIFY_HISTORY_PATH,
-                        )
-                        # 登记飞书卡片原文：用户点「确认已处理/忽略」时回调能更新卡片并记录回执
-                        feishu_entry = notify_results.get("feishu") or {}
-                        if feishu_entry.get("message_id"):
-                            feishu_ws.record_sent_card(feishu_entry["message_id"], card)
-                        state_mgr.mark_alert(fingerprint)
-                        pushed_count += 1
+            for task in req["tasks"]:
+                task_flight = str(task.get("flight_no", "") or "").strip().upper()
+                target_price = _target_price(task)
+                if task_flight:
+                    matched = [by_flight[task_flight]] if task_flight in by_flight else []
+                else:
+                    matched = list(fares)
+                if task_flight and not matched:
+                    others = [
+                        f"{str(i.get('flight', '?'))} {i.get('price')} 元"
+                        for i in fares
+                        if isinstance(i.get("price"), int)
+                    ]
+                    append_log(f"{task_flight} 本次未返回（暂无可兑票）" + (f"；同日其他：{'、'.join(others)}" if others else ""))
+                    continue
+                for item in matched:
+                    price = item.get("price")
+                    if not isinstance(price, int):
+                        continue
+                    flight = str(item.get("flight", "UNKNOWN"))
+                    append_log(f"{flight} | {price} 元 | {_seat_summary(item)}")
+                    if price <= target_price and _task_seat_ok(task, item) and _task_tier_ok(task, item):
+                        hits.append({"req": req, "task": task, "item": item, "flight": flight, "price": price,
+                                     "target_price": target_price, "fare_label": fare_label})
 
-        if pushed_count > 0:
-            append_log(f"已发送 {pushed_count} 条低价提醒。")
+        # 一组查完再发提醒：往返组的提醒里带上另一段同一时刻的价格。
+        for hit in hits:
+            req, task, item = hit["req"], hit["task"], hit["item"]
+            flight, price, target_price = hit["flight"], hit["price"], hit["target_price"]
+            from_code, to_code, date = req["from_code"], req["to_code"], req["date"]
+            from_city, to_city = code_to_city_only(from_code), code_to_city_only(to_code)
+            # 提醒用“命中当天”的任务视图：正文显示具体日期，指纹含日期可避免区间内重复推送。
+            alert_task = dict(task)
+            alert_task["date"] = date
+            alert_task["date_end"] = str(task.get("date_end", "") or "")
+            fingerprint = _build_fingerprint(alert_task, flight, price)
+            if not state_mgr.should_alert(fingerprint):
+                continue
+            companion = _companion_text(unit, req, results)
+            seat_text = _seat_summary(item)
+            # 保留 Server酱（向后兼容；公众号开关关闭时跳过）
+            if wechat_enabled:
+                send_price_alert(send_keys, alert_task, flight, price, tiers=item.get("tiers"), extra=companion)
+            else:
+                append_log("微信公众号通知已停用，跳过 Server酱低价提醒。")
+            # 多通道通知：飞书交互卡片（确认/忽略回调）+ 企微/钉钉/Bark/ntfy
+            cabin_extra = ""
+            cabin_raw = task.get("cabins")
+            if isinstance(cabin_raw, (list, tuple)):
+                cabin_list = [str(c).strip().upper() for c in cabin_raw if str(c).strip()]
+            elif isinstance(cabin_raw, str):
+                cabin_list = [c.strip().upper() for c in cabin_raw.split(",") if c.strip()]
+            else:
+                cabin_list = []
+            if cabin_list:
+                cabin_extra = f"，舱位条件：{'、'.join(cabin_list)}"
+            alert_title = f"🎉 {from_city}→{to_city} {price} 元"
+            alert_content = (
+                f"航班：{flight}\n"
+                f"日期：{date}\n"
+                f"航线：{from_city}({from_code}) → {to_city}({to_code})\n"
+                f"类型：{hit['fare_label']}（目标 ≤ {target_price} 元，已达标 ✅）\n"
+                f"档位：{tier_text(item.get('tiers'))}\n"
+                f"价格：{price} 元\n"
+                f"余票：{seat_text}{cabin_extra}"
+                + (f"\n{companion}" if companion else "")
+            )
+            card = build_confirm_card(
+                alert_title, alert_content, callback_key="price_alert", action_value=fingerprint
+            )
+            notify_results = notify_channels(
+                cfg=notify_cfg,
+                level="important",
+                title=alert_title,
+                content=alert_content,
+                card=card,
+                history_path=NOTIFY_HISTORY_PATH,
+            )
+            # 登记飞书卡片原文：用户点「确认已处理/忽略」时回调能更新卡片并记录回执
+            feishu_entry = notify_results.get("feishu") or {}
+            if feishu_entry.get("message_id"):
+                feishu_ws.record_sent_card(feishu_entry["message_id"], card)
+            state_mgr.mark_alert(fingerprint)
+            pushed_count += 1
+
+    if pushed_count > 0:
+        append_log(f"已发送 {pushed_count} 条低价提醒。")
 
     return saw_prices
 

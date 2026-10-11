@@ -164,6 +164,28 @@ def test_set_tasks_enabled_ids(app_env):
     assert state[ids[0]] is True and state[ids[1]] is True
 
 
+def test_set_tasks_enabled_one_date(app_env):
+    """同一航班多个日期时，只停其中一天，其他日期继续监控。"""
+    app_mod.add_tasks_batch([{
+        "from_code": "TNA", "to_code": "SZX", "dates": ["2026-11-08", "2026-11-15"],
+        "flight_no": "Y87904", "dep_time": "22:55", "arr_time": "01:30",
+    }])
+    task = _read_tasks(app_env)[0]
+    assert app_mod.set_tasks_enabled([task["id"]], False, ["2026-11-08"]) == 1
+    task = _read_tasks(app_env)[0]
+    assert task["enabled"] is True
+    assert task["disabled_dates"] == ["2026-11-08"]
+    assert expand_dates(task) == ["2026-11-15"]
+    assert app_mod.set_tasks_enabled([task["id"]], False, ["2026-11-15"]) == 1
+    task = _read_tasks(app_env)[0]
+    assert task["enabled"] is False
+    assert expand_dates(task) == []
+    assert app_mod.set_tasks_enabled([task["id"]], True, ["2026-11-08"]) == 1
+    task = _read_tasks(app_env)[0]
+    assert task["enabled"] is True
+    assert expand_dates(task) == ["2026-11-08"]
+
+
 def test_expand_task_dates_new_and_old_model(app_env):
     # 新模型 dates 列表去重排序
     assert app_mod.expand_task_dates({"dates": ["2026-09-21", "2026-09-20", "2026-09-21"]}) == ["2026-09-20", "2026-09-21"]
@@ -324,3 +346,4 @@ def test_daemon_expand_dates_dates_field():
     assert expand_dates({"date": "2026-09-20", "date_end": "2026-09-22"}) == ["2026-09-20", "2026-09-21", "2026-09-22"]
     assert expand_dates({"dates": [], "date": "2026-09-20", "date_end": "2026-09-21"}) == ["2026-09-20", "2026-09-21"]
     assert expand_dates({"dates": ["2026-09-20", "bad"], "date": "2026-08-01"}) == ["2026-09-20"]
+    assert expand_dates({"dates": ["2026-11-08", "2026-11-15"], "disabled_dates": ["2026-11-08"]}) == ["2026-11-15"]

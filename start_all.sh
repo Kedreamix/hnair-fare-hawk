@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 启动海航监控双进程：daemon + Web 控制台（Web 仅监听本机 127.0.0.1，避免局域网暴露配置与 SendKey）
+# 启动海航监控双进程：daemon + Web 控制台（Web 监听 0.0.0.0:80，局域网可访问；控制台无登录，勿暴露到公网）
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -28,11 +28,11 @@ else
   echo "daemon 已启动 (PID $(cat daemon.pid))"
 fi
 
-# 2) Web 控制台（API + 静态页面，仅本机可访问）
+# 2) Web 控制台（API + 静态页面，局域网可访问）
 if [ -f web.pid ] && kill -0 "$(cat web.pid)" 2>/dev/null; then
   echo "Web 已在运行 (PID $(cat web.pid))"
 else
   nohup env -u ELECTRON_RUN_AS_NODE "$PY" web_api.py >> web_stdout.log 2>&1 &
   echo $! > web.pid
-  echo "Web 已启动 (PID $(cat web.pid))，地址 http://127.0.0.1:8501"
+  echo "Web 已启动 (PID $(cat web.pid))，地址 http://127.0.0.1:80"
 fi

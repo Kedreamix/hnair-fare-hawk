@@ -1,8 +1,8 @@
 // 统一图标：基于开源 lucide-react（GitHub: lucide-icons/lucide，月下载量 3.9 亿+）
 // 统一 size=14 / strokeWidth=2 的线性风格，替换原 @ant-design/icons 使用点。
 import {
-  Calendar, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Compass, FileText, HelpCircle, LayoutDashboard,
-  MessageCircle, Pencil, Plus, Power, Radar, Rocket, Send, Settings, ShieldCheck, Target, Trash2, X,
+  ArrowLeftRight, Calendar, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Compass, FileText, HelpCircle, LayoutDashboard,
+  Luggage, Map, MessageCircle, Moon, Pencil, Plus, Power, Radar, Rocket, Send, Settings, ShieldCheck, Sun, Sunrise, Sunset, Target, Trash2, X,
 } from 'lucide-react'
 
 const wrap = (C) => (props) => <C size={typeof props.size === 'number' ? props.size : 14} strokeWidth={2} {...props} />
@@ -28,3 +28,10 @@ export const TargetIcon = wrap(Target)                // 总览 · 低价命中�
 export const DeleteIcon = wrap(Trash2)
 export const QuestionIcon = wrap(HelpCircle)          // 教学提示（卡片标题旁 ?）
 export const CloseIcon = wrap(X)                      // 关闭（测试结果条）
+export const SwapIcon = wrap(ArrowLeftRight)          // 对调出发地和到达地
+export const MoonIcon = wrap(Moon)
+export const SunriseIcon = wrap(Sunrise)
+export const SunIcon = wrap(Sun)
+export const SunsetIcon = wrap(Sunset)
+export const LuggageIcon = wrap(Luggage)
+export const MapIcon = wrap(Map)

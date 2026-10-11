@@ -3,3 +3,4 @@ requests>=2.31.0
 portalocker>=2.8.2
 python-dotenv>=1.0.1
 pytest>=8.0.0
+websockets>=13.0

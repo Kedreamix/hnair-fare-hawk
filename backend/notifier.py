@@ -84,8 +84,9 @@ def send_price_alert(
     flight: str,
     price: int,
     tiers=None,
+    extra: str = "",
 ) -> Dict[str, bool]:
-    """发送普通低价提醒（微信 Server酱，desp 支持 Markdown）。"""
+    """发送普通低价提醒（微信 Server酱，desp 支持 Markdown）；extra 为附加说明（如往返另一段价格）。"""
     keys = _normalize_keys(send_keys)
     results: Dict[str, bool] = {}
     from_code = str(task.get("from_code", "-"))
@@ -105,7 +106,8 @@ def send_price_alert(
         f"**类型**：{_fare_label(task.get('fare_type', ''))}（目标价 ≤ {task.get('target_price', '-')} 元 · 已达标 ✅）\n\n"
         f"**档位**：{tier_text(tiers)}\n\n"
         f"**价格**：**{price} 元**\n\n"
-        "---\n\n"
+        + (f"**{extra}**\n\n" if extra else "")
+        + "---\n\n"
         f"⏰ 查询时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         "👉 价格已达标，建议尽快打开海航 App / 官网查询下单"
     )

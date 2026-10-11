@@ -61,6 +61,8 @@ def test_save_notify_channels_defaults(app_env):
     assert set(nc["dingtalk"]) == {"enabled", "webhook", "secret"}
     assert set(nc["bark"]) == {"enabled", "device_key", "server"}
     assert set(nc["ntfy"]) == {"enabled", "topic", "server"}
+    assert set(nc["wechat_bot"]) == {"enabled", "bot_id", "secret", "chat_id", "chat_type"}
+    assert set(nc["email"]) == {"enabled", "host", "port", "username", "password", "sender", "receiver"}
 
 
 def test_save_notify_channels_secret_keep_on_empty(app_env):
@@ -219,8 +221,93 @@ def test_notify_channels_critical_forces_all(tmp_path, monkeypatch):
     notify_cfg = {"urgent_enabled": True, "wecom": {"enabled": False}, "feishu": {}, "dingtalk": {}, "bark": {}, "ntfy": {}}
     results = channels.notify_channels(cfg=notify_cfg, level="critical", title="阻断", content="x", history_path=str(tmp_path / "h.jsonl"))
     # critical 强制全渠道（未启用也尝试，失败记录）
-    assert sorted(calls) == sorted(["wecom", "feishu", "dingtalk", "bark", "ntfy"])
+    assert sorted(calls) == sorted(["wecom", "feishu", "dingtalk", "bark", "ntfy", "wechat_bot", "email"])
     assert all(not results[n]["ok"] for n in results)
+
+
+def test_wechat_bot_key_and_email_keep_secret(app_env):
+    app_mod.save_notify_channels({
+        "wechat_bot": {"enabled": True, "bot_id": "bot-1", "secret": "bot-secret", "chat_id": "kaijundeng", "chat_type": "group"},
+        "email": {"host": "smtp.example.com", "password": "auth-code", "sender": "a@example.com", "receiver": "b@example.com"},
+    })
+    cfg = _read_config(app_env)
+    bot = cfg["notify_channels"]["wechat_bot"]
+    assert bot["secret"] == "bot-secret"
+    assert bot["chat_id"] == "kaijundeng"
+    assert bot["chat_type"] == "group"
+    assert cfg["notify_channels"]["email"]["password"] == "auth-code"
+    app_mod.save_notify_channels({"wechat_bot": {"secret": "", "bot_id": ""}, "email": {"password": ""}})
+    cfg = _read_config(app_env)
+    assert cfg["notify_channels"]["wechat_bot"]["secret"] == "bot-secret"
+    assert cfg["notify_channels"]["wechat_bot"]["bot_id"] == "bot-1"
+    assert cfg["notify_channels"]["email"]["password"] == "auth-code"
+
+
+def test_wechat_bot_and_email_send_without_leaking(monkeypatch):
+    seen = {}
+
+    def fake_send(bot_id, secret, chat_id, chat_type, content):
+        seen.update(bot_id=bot_id, secret=secret, chat_id=chat_id, chat_type=chat_type, content=content)
+
+    monkeypatch.setattr(channels, "aibot_send_markdown", fake_send)
+    ok, err, _mid = channels.send_wechat_bot(
+        {"bot_id": "bot-1", "secret": "bot-secret", "chat_id": "kaijundeng", "chat_type": "group"},
+        "低价",
+        "深圳到济南",
+        False,
+    )
+    assert ok and err == ""
+    assert seen["chat_id"] == "kaijundeng"
+    assert seen["chat_type"] == 1
+    assert "bot-secret" not in seen["content"]
+    assert "bot-secret" not in err
+
+    sent = {}
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=15):
+            sent["host"] = host
+            sent["port"] = port
+
+        def login(self, user, password):
+            sent["user"] = user
+            sent["password"] = password
+            return (235, b"Authentication successful")
+
+        def sendmail(self, sender, receivers, raw):
+            sent["from"] = sender
+            sent["to"] = receivers
+            sent["raw"] = raw
+
+        def quit(self):
+            sent["quit"] = True
+
+    monkeypatch.setattr(channels.smtplib, "SMTP_SSL", FakeSMTP)
+    ok, err, _mid = channels.send_email(
+        {
+            "host": "smtp.example.com",
+            "port": "465",
+            "username": "mailbox",
+            "password": "auth-code",
+            "sender": "mailbox@qq.com",
+            "receiver": "b@example.com, c@example.com",
+        },
+        "低价",
+        "深圳到济南",
+        True,
+    )
+    assert ok and err == ""
+    assert sent["port"] == 465
+    assert sent["user"] == "mailbox"
+    assert sent["from"] == "mailbox@qq.com"
+    assert sent["password"] == "auth-code"
+    assert "auth-code" not in err
+    assert sent["to"] == ["b@example.com", "c@example.com"]
+    assert "From: mailbox@qq.com" in sent["raw"]
+    assert "Subject:" in sent["raw"]
+
+    ok, err, _mid = channels.send_email({"host": "smtp.example.com"}, "t", "c", False)
+    assert not ok and "不完整" in err
 
 
 # ==================== feishu_ws 回调 ====================

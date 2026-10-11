@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, urlsplit
 
+import portalocker
 import requests
 from dotenv import load_dotenv
 
@@ -902,13 +903,16 @@ def _build_request_profile(
     - True  强制刷新。
     """
     captured_profile = _load_captured_request_profile(fare_type)
-    if not captured_profile:
-        # 票据派生：本类型未抓包时，复用另一档票据的凭证，仅改写端点与 specialZone。
-        # 普通档与 PLUS 档共用同一套 cookie/token/签名，差异只有端点与 specialZone 字段。
-        other_type = "plus" if fare_type == "normal" else "normal"
-        captured_profile = _load_captured_request_profile(other_type)
+    if not captured_profile and fare_type == "normal":
+        # 只有普通档可以借用 PLUS 票据里的登录态，并改回普通票端点。
+        # PLUS 不能反过来借用普通票请求：签名和端点是成对的，改地址会验签失败。
+        captured_profile = _load_captured_request_profile("plus")
         if captured_profile:
-            captured_profile["derived_from"] = other_type
+            captured_profile["derived_from"] = "plus"
+    if not captured_profile and fare_type == "plus":
+        raise TokenExpiredError(
+            "尚未配置 PLUS 专享请求。请抓取 ffl/airLowFareSearch，URL 中需要包含 token。不能用普通票请求改地址代替。"
+        )
 
     if captured_profile:
         payload = deepcopy(captured_profile["payload"])
@@ -919,9 +923,14 @@ def _build_request_profile(
             origin_destinations[0]["destination"] = to_code.upper()
             origin_destinations[0]["departureDate"] = date
         if fare_type == "plus":
+            path = urlsplit(str(captured_profile.get("url", ""))).path
+            token = str((captured_profile.get("query") or {}).get("token", "")).strip()
+            # airCtLowFareSearch 没有 token，改写成 ffl 端点后签名对不上，请求发不出去。
+            if "/ffl/" not in path or _is_placeholder(token):
+                raise TokenExpiredError(
+                    "PLUS 请求必须是 ffl/airLowFareSearch，且 URL 中包含 token。当前保存的不是这份请求，不能改地址复用签名。"
+                )
             data["specialZone"] = "ffl"
-            # PLUS 会员专享通道固定使用 ffl/airLowFareSearch 端点。
-            # 抓包抓到的 airCtLowFareSearch 是普通低价接口，对 PLUS 会返回 0903“无航班”。
             captured_profile["url"] = REQUEST_URL_PLUS
         else:
             # 普通档永远走 airLowFareSearch 端点，且不带 specialZone。
@@ -1055,6 +1064,33 @@ def _request_proxies(proxy: str) -> Dict[str, str] | None:
     return {"http": proxy, "https": proxy}
 
 
+QUERY_GATE_PATH = BASE_DIR / "query_gate.json"
+QUERY_GATE_MIN_SEC = 3
+
+
+def _min_query_interval() -> int:
+    return QUERY_GATE_MIN_SEC
+
+
+def _wait_query_gate() -> None:
+    """后台监控与控制台手动查价共用的最小请求间隔：距上一次真实请求不足 QUERY_GATE_MIN_SEC 秒就等够再发。"""
+    interval = _min_query_interval()
+    QUERY_GATE_PATH.touch(exist_ok=True)
+    with portalocker.Lock(str(QUERY_GATE_PATH), mode="r+", timeout=interval * 4 + 30) as fh:
+        raw = fh.read().strip()
+        try:
+            last = float(json.loads(raw).get("last_ts", 0)) if raw else 0.0
+        except (ValueError, AttributeError):
+            last = 0.0
+        wait = last + interval - time.time()
+        if wait > 0:
+            time.sleep(min(wait, interval))
+        fh.seek(0)
+        fh.truncate()
+        fh.write(json.dumps({"last_ts": time.time()}))
+        fh.flush()
+
+
 def _request_price(profile: Dict[str, Any]) -> "tuple[str, List[Dict[str, Any]]]":
     """
     用给定 profile 执行一次抓价请求并解析。
@@ -1081,6 +1117,7 @@ def _request_price(profile: Dict[str, Any]) -> "tuple[str, List[Dict[str, Any]]]
         raise TokenExpiredError("检测到 token/sign/cookie 仍为占位符，尚未配置真实凭证")
 
     proxies = _request_proxies(_load_proxy())
+    _wait_query_gate()
 
     try:
         response = requests.post(

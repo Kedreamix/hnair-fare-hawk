@@ -11,7 +11,7 @@
 - **是什么**：海航随心飞（666/2666 会员专享价）机票低价监控 + 航线查询控制台。监控任务命中低价（≤199 元）自动推微信/飞书等渠道通知；航线查询基于底表静态数据 + 官方实时查价。
 - **路径**：`/Users/Wcg/Desktop/Project_local/海航监控`（用户桌面，会持续迭代）
 - **技术栈**：前端 React + Vite + Ant Design 5（`web/`，lucide-react 图标）；后端为纯标准库 HTTP API `web_api.py`（托管静态文件 + 业务路由），监控循环 `daemon.py`；Python venv `.venv/bin/python`（3.14）
-- **端口**：8501，仅绑定 127.0.0.1
+- **端口**：80，绑定 0.0.0.0（局域网可访问，可用 WEB_API_HOST 改回 127.0.0.1）
 - **服务进程（以 `pgrep -fl "daemon.py|web_api.py|sync_from_price_api|progress_reporter"` 为准，pid 文件常过期）**：
   - web_api：bash 包装 33125 + Python 33207（第 10 轮重启）
   - daemon：bash 包装 33213 + Python 33296（第 10 轮重启，监控 2 条任务）
@@ -56,19 +56,19 @@ cd /Users/Wcg/Desktop/Project_local/海航监控 && .venv/bin/python -m pytest t
 
 # 进程确认（⚠️ 勿用 pgrep -f "python web_api.py"：实际命令行是大写 Python 路径，匹配不到）
 pgrep -fl "daemon.py|web_api.py"
-lsof -nP -i :8501   # 端口占用/连接状况
+lsof -nP -i :80   # 端口占用/连接状况
 
 # 一键启停（agent 环境里不可靠：nohup & 会被进程组清理，见下）
 ./stop_all.sh / ./start_all.sh
 ```
 
 **长驻服务重启规范（重要，违反会死进程）**：
-1. 先 `lsof -nP -i :8501` 确认端口释放；残留旧进程会 bind 失败。
+1. 先 `lsof -nP -i :80` 确认端口释放；残留旧进程会 bind 失败。
 2. kill 时**两个都要停**：bash 包装进程 + Python 子进程（`kill <bash_pid> <py_pid>`，或 `kill 0` 组内）。
 3. 启动必须用 harness 的 `exec_command(run_in_background=true)` 且命令前加 `env -u ELECTRON_RUN_AS_NODE`：
    `env -u ELECTRON_RUN_AS_NODE .venv/bin/python web_api.py`
    严禁 shell 里 `... &` 自己后台化——整个进程组在命令退出时会被清理。
-4. 启动后 curl 冒烟：`curl -s http://127.0.0.1:8501/api/tasks` 等。
+4. 启动后 curl 冒烟：`curl -s http://127.0.0.1:80/api/tasks` 等。
 
 ---
 
@@ -76,6 +76,9 @@ lsof -nP -i :8501   # 端口占用/连接状况
 
 - **数据链路**：底表（静态：航线/班期/时刻/可飞日期）→ 航线查询；价格/经停/余票/舱位 = 官方接口**实时查价**（`/api/flights/prices`，需抓包票据，`config.json` 中，不入库）。无静态价格数据。
 - **档位**：真实可兑档位仅 **666**（限 20:00 后/08:00 前航班，屏蔽春运/五一/暑运/十一）与 **2666**（限 19:00 后/09:00 前，仅屏蔽春运/暑运）。
+  - **判定以海航 App 为准（用户确认）**：海航系航班只要 App 里有这班、起飞时刻落在窗口内（666：00:00–08:00 / 20:00–23:59；2666：00:00–09:00 / 19:00–23:59）就算可兑；PLUS 搜索查不到可能只是暂未放票。官方《PLUS 适用航班》PDF 可能漏列，不作唯一依据。
+  - App 随心飞搜索（`/lfs/ffl/airLowFareSearch`）只能查约 12 天内，且只返回当前登录卡可兑的航班（666 卡看不到仅 2666 的班）；核对航班是否存在用普通票搜索。
+  - PDF 漏列、经 App 核实的冬春航班放 `data/sediment/plus_winter_2026_extra.json`（`sediment.load_records` 自动合并，重新导入 PDF 不覆盖）。
 - **档位×日期规则**：`data/sediment/tier_block_rules.json` 单一事实源 → `sediment.meta()` 下发 → 前端 `DEFAULT_TIER_BLOCK_RULES` 兜底；`filterTierDates()` 三处调用（编辑弹窗 x2、批转弹窗 x2）。**日期限制（只能当天及以后）只在前端做**，后端 query() 不加强制（避免测试随真实日期推移挂掉）。
 - **监控任务**：`tasks.json`（不入库）；同航线+航班号+起降时刻分组、日期合并且行内展示最多 4 个+「+N」；任务不能手动建，只能从航线查询批转/编辑/启停/删除。
 - **通知**：7 渠道（微信 Server酱/企业微信/钉钉/Bark/ntfy/飞书）；important 加急默认开、critical 强制全渠道 + 通知历史；飞书长连接 `feishu_ws.py` 收卡片回执；**加急权限 `im:message.urgent` 已于 2026-09-04 由用户开通**（遗留关闭）。

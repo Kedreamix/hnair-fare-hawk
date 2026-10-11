@@ -1,4 +1,4 @@
-"""多通道消息通知：企业微信 / 飞书（加急+卡片） / 钉钉 / Bark(iOS) / ntfy(Android)。
+"""多通道消息通知：企业微信 / 企业微信机器人 / 邮件 / 飞书（加急+卡片） / 钉钉 / Bark(iOS) / ntfy(Android)。
 
 统一入口 ``notify_channels``：按 config.notify_channels 路由到所有已启用渠道，
 返回 {channel: {"ok": bool, "error": str, "message_id": str}}。
@@ -18,9 +18,11 @@ import base64
 import hashlib
 import hmac
 import json
+import smtplib
 import time
 import urllib.parse
 from datetime import datetime
+from email.mime.text import MIMEText
 from typing import Any, Dict, Optional
 
 import requests
@@ -121,6 +123,117 @@ def send_wecom(cfg: Dict[str, Any], title: str, content: str, urgent: bool) -> t
     if errcode in (40013, 40014):
         return False, f"企业ID/Secret 无效（errcode={errcode}）", ""
     return False, f"企业微信接口返回 errcode={errcode}: {data.get('errmsg', '')}", ""
+
+
+def _trim_utf8(text: str, limit: int) -> str:
+    raw = text.encode("utf-8")
+    if len(raw) <= limit:
+        return text
+    return raw[: limit - 3].decode("utf-8", errors="ignore") + "..."
+
+
+def aibot_send_markdown(bot_id: str, secret: str, chat_id: str, chat_type: int, content: str) -> None:
+    """智能机器人长连接：订阅后发一条 markdown。失败抛 RuntimeError，内容不含凭证。"""
+    import asyncio
+    import ssl
+    import uuid
+
+    import certifi
+    import websockets
+
+    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+
+    async def _run() -> None:
+        async with websockets.connect("wss://openws.work.weixin.qq.com", ssl=ssl_ctx, open_timeout=15) as ws:
+            await ws.send(json.dumps({
+                "cmd": "aibot_subscribe",
+                "headers": {"req_id": str(uuid.uuid4())},
+                "body": {"bot_id": bot_id, "secret": secret},
+            }))
+            subscribed = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
+            if subscribed.get("errcode") != 0:
+                raise RuntimeError(f"订阅失败 errcode={subscribed.get('errcode')}")
+            await ws.send(json.dumps({
+                "cmd": "aibot_send_msg",
+                "headers": {"req_id": str(uuid.uuid4())},
+                "body": {
+                    "chatid": chat_id,
+                    "chat_type": chat_type,
+                    "msgtype": "markdown",
+                    "markdown": {"content": content},
+                },
+            }))
+            sent = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
+            if sent.get("errcode") != 0:
+                raise RuntimeError(f"推送失败 errcode={sent.get('errcode')}")
+
+    asyncio.run(_run())
+
+
+def send_wechat_bot(cfg: Dict[str, Any], title: str, content: str, urgent: bool) -> tuple[bool, str, str]:
+    """企业微信机器人，只发个人单聊。"""
+    bot_id = str(cfg.get("bot_id", "") or "").strip()
+    secret = str(cfg.get("secret", "") or "").strip()
+    chat_id = str(cfg.get("chat_id", "") or "").strip()
+    chat_type = 1
+    if not (bot_id and secret and chat_id):
+        return False, "企业微信机器人配置不完整（需要机器人 ID、Secret、接收人）", ""
+    heading = f"## {title}" if not urgent else f"## ⚠️ {title}"
+    body = _trim_utf8(f"{heading}\n\n{content}", 20000)
+    try:
+        aibot_send_markdown(bot_id, secret, chat_id, chat_type, body)
+    except ImportError:
+        return False, "发送失败：缺少 websockets 库", ""
+    except RuntimeError as exc:
+        return False, str(exc), ""
+    except Exception:
+        return False, "连接企业微信机器人失败", ""
+    return True, "", ""
+
+
+def send_email(cfg: Dict[str, Any], title: str, content: str, urgent: bool) -> tuple[bool, str, str]:
+    """QQ 邮箱式 SMTP：465 用 SSL，登录名和发件人可以分开。密码是授权码。"""
+    host = str(cfg.get("host", "") or "").strip()
+    username = str(cfg.get("username", "") or "").strip()
+    password = str(cfg.get("password", "") or "").strip()
+    sender = str(cfg.get("sender", "") or "").strip()
+    raw_to = str(cfg.get("receiver", "") or "").replace(";", ",").replace("\n", ",")
+    receivers = [part.strip() for part in raw_to.split(",") if part.strip()]
+    port_raw = str(cfg.get("port", "") or "").strip() or "465"
+    if not port_raw.isdigit() or not (1 <= int(port_raw) <= 65535):
+        return False, "邮件端口不正确", ""
+    port = int(port_raw)
+    if not sender and "@" in username:
+        sender = username
+    if not (host and username and sender and receivers and password):
+        return False, "邮件配置不完整（需要服务器、登录账号、授权码、发件人和收件人）", ""
+
+    subject = f"【加急】{title}" if urgent else title
+    message = MIMEText(content, "plain", "utf-8")
+    message["From"] = sender
+    message["To"] = ",".join(receivers)
+    message["Subject"] = subject
+    try:
+        if port == 465:
+            smtp = smtplib.SMTP_SSL(host, port, timeout=15)
+        else:
+            smtp = smtplib.SMTP(host, port, timeout=15)
+            smtp.ehlo()
+            if port != 25:
+                smtp.starttls()
+                smtp.ehlo()
+        login_res = smtp.login(username, password)
+        code = login_res[0] if isinstance(login_res, tuple) else 0
+        if code != 235:
+            smtp.quit()
+            return False, "邮箱登录失败，请检查账号和授权码", ""
+        smtp.sendmail(sender, receivers, message.as_string())
+        smtp.quit()
+    except smtplib.SMTPAuthenticationError:
+        return False, "邮箱登录失败，请检查账号和授权码", ""
+    except (OSError, smtplib.SMTPException):
+        return False, "发送邮件失败，请检查服务器、端口和收件人", ""
+    return True, "", ""
 
 
 # ==================== 钉钉群机器人 ====================
@@ -393,8 +506,12 @@ def update_feishu_card(app_id: str, app_secret: str, message_id: str, card: Dict
 
 # ==================== 统一路由 ====================
 
+CHANNEL_NAMES = ("wecom", "feishu", "dingtalk", "bark", "ntfy", "wechat_bot", "email")
+
 CHANNEL_LABELS = {
     "wecom": "企业微信",
+    "wechat_bot": "企业微信机器人",
+    "email": "邮件",
     "feishu": "飞书",
     "dingtalk": "钉钉",
     "bark": "Bark(iOS)",
@@ -446,6 +563,10 @@ def send_channel(
         return send_feishu(feishu_cfg, title, content, urgent, card=card)
     if name == "dingtalk":
         return send_dingtalk(ch, title, content, urgent)
+    if name == "wechat_bot":
+        return send_wechat_bot(ch, title, content, urgent)
+    if name == "email":
+        return send_email(ch, title, content, urgent)
     if name == "bark":
         return send_bark(ch, title, content, urgent)
     if name == "ntfy":
@@ -469,7 +590,7 @@ def notify_channels(
     - 结果写 notification_history.jsonl（若指定 history_path），成功/失败都记录。
     """
     results: Dict[str, Dict[str, Any]] = {}
-    names = channels or [n for n in ("wecom", "feishu", "dingtalk", "bark", "ntfy")]
+    names = channels or list(CHANNEL_NAMES)
     for name in names:
         if not _channel_enabled(cfg, name) and level != "critical":
             continue

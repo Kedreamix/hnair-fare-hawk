@@ -3,6 +3,9 @@
 数据源：
 - data/sediment/flights_normalized.json（2026 秋航季，由 scripts/sedimentation/update.py
   重建，重建前存时点快照，版本见 data/sediment/versions.json）；
+- data/sediment/plus_winter_2026.json（2026 冬春 PLUS 适用航班，由
+  scripts/import_plus_winter.py 从航线表生成，查询时接在秋航季后面）；
+- data/sediment/plus_winter_2026_extra.json（冬春人工补充：官方 PDF 漏列、经海航 App 核实的航班）；
 - data/sediment/tier_block_rules.json（档位×日期屏蔽规则，单一事实源，经
   meta() 下发前端日期选择；query() 按档位日期屏蔽返回空）。
 
@@ -24,6 +27,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 SEDIMENT_PATH = Path(__file__).resolve().parents[1] / "data" / "sediment" / "flights_normalized.json"
+WINTER_PATH = Path(__file__).resolve().parents[1] / "data" / "sediment" / "plus_winter_2026.json"
+# 官方 PDF 漏列、经海航 App 核实的冬春航班；import_plus_winter.py 重新生成时不会覆盖
+WINTER_EXTRA_PATH = Path(__file__).resolve().parents[1] / "data" / "sediment" / "plus_winter_2026_extra.json"
 TIER_BLOCK_RULES_PATH = Path(__file__).resolve().parents[1] / "data" / "sediment" / "tier_block_rules.json"
 
 _lock = threading.Lock()
@@ -32,17 +38,31 @@ _block_lock = threading.Lock()
 _block_cache: Optional[Dict[str, Any]] = None
 
 
+def _read_record_file(path: Path) -> List[Dict[str, Any]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return list(payload.get("records") or [])
+
+
 def load_records(path: str | Path | None = None, force: bool = False) -> List[Dict[str, Any]]:
-    """加载底表 records，首次调用后缓存。数据文件缺失时返回空列表（不影响其他功能）。"""
+    """加载底表 records，首次调用后缓存。数据文件缺失时返回空列表（不影响其他功能）。
+
+    默认同时读入秋航季底表和冬春 PLUS 表。传入 path 时只读该文件，便于测试替换底表。
+    """
     global _cache
     if _cache is None or force:
         with _lock:
             if _cache is None or force:
                 try:
-                    payload = json.loads(Path(path or SEDIMENT_PATH).read_text(encoding="utf-8"))
-                    _cache = list(payload.get("records", []))
+                    records = _read_record_file(Path(path) if path else SEDIMENT_PATH)
                 except (OSError, ValueError):
-                    _cache = []
+                    records = []
+                if path is None:
+                    for extra in (WINTER_PATH, WINTER_EXTRA_PATH):
+                        try:
+                            records.extend(_read_record_file(extra))
+                        except (OSError, ValueError):
+                            pass
+                _cache = records
     return _cache
 
 
@@ -275,9 +295,45 @@ def query(
             if str(flight_no).upper() not in fn:
                 continue
         out.append(rec)
-        if limit and len(out) >= limit:
-            break
+    if not date_str and not date_start and not date_end:
+        today = date.today().isoformat()
+        out = [rec for rec in out if _relevant_on_or_after(rec, today)]
+    out.sort(key=_flight_sort_key)
+    if limit:
+        return out[:limit]
     return out
+
+
+def _range_pairs(record: Dict[str, Any]) -> List[List[str]]:
+    pairs = []
+    for raw in record.get("effective_dates") or []:
+        if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+            pairs.append([str(raw[0])[:10], str(raw[1])[:10]])
+    return pairs
+
+
+def _relevant_on_or_after(record: Dict[str, Any], day: str) -> bool:
+    """有效期终点不早于 day。没有日期的记录保留。"""
+    ranges = _range_pairs(record)
+    if not ranges:
+        return True
+    return any(end >= day for _, end in ranges)
+
+
+def _flight_sort_key(record: Dict[str, Any]) -> tuple:
+    """同一航班号、同一航线排在一起，班期本身不合并。"""
+    ranges = _range_pairs(record)
+    start = ranges[0][0] if ranges else ""
+    origin = str((record.get("origin") or {}).get("iata") or "")
+    dest = str((record.get("dest") or {}).get("iata") or "")
+    return (
+        str(record.get("flight_no") or ""),
+        origin,
+        dest,
+        start,
+        str(record.get("dep_time") or ""),
+        tuple(record.get("days") or []),
+    )
 
 
 def options(

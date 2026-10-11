@@ -8,7 +8,7 @@
  <img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-blue.svg">
   <img alt="Python 3.12+" src="https://img.shields.io/badge/Python-3.12%2B-0054A6.svg">
  <img alt="React 18" src="https://img.shields.io/badge/React-18-61DAFB.svg">
-   <img alt="Local only" src="https://img.shields.io/badge/%E4%BB%85%E6%9C%AC%E6%9C%BA-127.0.0.1%3A8501-98A2B3.svg">
+   <img alt="LAN" src="https://img.shields.io/badge/%E7%9B%91%E5%90%AC-0.0.0.0%3A80-98A2B3.svg">
  </p>
  
  盯住海航随心飞 **666 / 2666 会员专享价**：底表给出航线、班期与可飞日期，价格、经停和余票由官方接口**实时查价**，命中目标价（默认 ≤ ¥199）自动推送到微信 / 飞书等渠道。
@@ -50,14 +50,14 @@
  
  cd web && pnpm install && pnpm build && cd ..
  
- # 启动（Web 控制台仅监听 127.0.0.1:8501）
+ # 启动（Web 控制台监听 0.0.0.0:80，局域网可访问）
  .venv/bin/python web_api.py
  
  # 另开终端启动监控循环
  .venv/bin/python daemon.py
  ```
  
- 打开 http://127.0.0.1:8501：
+ 打开 http://127.0.0.1:80：
  
  1. **“监控设置 → 抓包票据”**粘贴你在海航官网/App 抓取的查询接口 cURL（普通票价入口 `airLowFareSearch`、PLUS 专享入口 `ffl/airLowFareSearch`，抓一份即可自动派生另一档）。票据与令牌仅存本地 `config.json`，**不入版本库**。
  2. **“航线查询”**选出发 / 到达 / 日期，把心仪航班“转为监控任务”，设置目标价与余票条件。
@@ -80,7 +80,7 @@
  
  ```text
  web/                  React 18 + Ant Design 5 控制台（Vite 构建）
- web_api.py            轻量 Web API（标准库 http.server，127.0.0.1:8501）
+ web_api.py            轻量 Web API（标准库 http.server，0.0.0.0:80）
  daemon.py             监控循环：轮询查价 → 判定 → 通知
  backend/              fetcher（官方查价）/ sediment（底表）/ channels（多渠道）/ feishu_ws（卡片回执）
  data/sediment/        底表静态数据与档位规则（入版本库）
@@ -102,7 +102,7 @@
  
  ## 限制与合规
  
- - 仅本机运行，绑定 127.0.0.1，不做公网暴露。
+ - 默认绑定 0.0.0.0:80，局域网可访问；控制台无登录，不要暴露到公网（需要仅本机时设 WEB_API_HOST=127.0.0.1）。
 - 实时查价依赖你**自行抓取的官方接口票据**；接口与签名实现随项目提供，但票据与令牌需由你自行抓取维护。本项目不提供任何绕过验证或风控的手段。
  - 底表静态数据来源于公开产品信息整理并经过本地二次加工（见[数据来源](#数据来源)），价格与余票仅作个人监控参考。
  - 请遵守海航及航司的服务条款与当地法律；因使用本工具产生的任何后果由使用者自行承担。

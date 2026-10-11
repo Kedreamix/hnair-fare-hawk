@@ -25,8 +25,12 @@ export const api = {
   setStatus: (status) => request('/api/status', { method: 'POST', body: JSON.stringify({ status }) }),
   addTask: (payload) => request('/api/tasks', { method: 'POST', body: JSON.stringify(payload) }),
   addTasksBatch: (items) => request('/api/tasks/batch', { method: 'POST', body: JSON.stringify({ items }) }),
-  setTaskEnabled: (ids, enabled) =>
-    request('/api/tasks/enabled', { method: 'POST', body: JSON.stringify({ ids: Array.isArray(ids) ? ids : [ids], enabled }) }),
+  setTaskEnabled: (ids, enabled, dates) =>
+    request('/api/tasks/enabled', { method: 'POST', body: JSON.stringify({
+      ids: Array.isArray(ids) ? ids : [ids],
+      enabled,
+      ...(dates ? { dates } : {}),
+    }) }),
   deleteTask: (ids) => request('/api/tasks/delete', { method: 'POST', body: JSON.stringify({ ids: Array.isArray(ids) ? ids : [ids] }) }),
   updateTasks: (ids, payload) =>
     request('/api/tasks/update', { method: 'POST', body: JSON.stringify({ ids: Array.isArray(ids) ? ids : [ids], ...payload }) }),

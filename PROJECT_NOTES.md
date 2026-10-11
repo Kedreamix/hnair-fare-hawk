@@ -9,7 +9,7 @@
 GitHub: huiMiluMilu/hna-hna-low-fare-monitor-skill-shihui，现已大幅自研迭代）。
 
 - 前端：React 18 + AntD 5（`web/`，Vite 构建），由 `web_api.py`（标准库 HTTP API，
-  绑定 127.0.0.1:8501）托管页面 + API。
+  绑定 127.0.0.1:80）托管页面 + API。
 - 后端：`daemon.py` 常驻循环——定时抓价、命中阈值推微信（Server酱）/ 飞书。
 - 数据：`data/sediment/flights_normalized.json` 正式底表（航线/班期/档位以
   海航随心飞基线为准），第三方校正与全量自扫只更新时刻/航站楼/经停等基础事实。
@@ -20,7 +20,7 @@ GitHub: huiMiluMilu/hna-hna-low-fare-monitor-skill-shihui，现已大幅自研�
 ```
 海航监控/
 ├── web/                    # React + AntD 前端源码（pnpm，构建产物 web/dist）
-├── web_api.py              # 轻量 Web API（127.0.0.1:8501，托管页面+API）
+├── web_api.py              # 轻量 Web API（127.0.0.1:80，托管页面+API）
 ├── daemon.py               # 后端常驻抓价循环
 ├── app.py                  # Streamlit 旧前端（保留读写逻辑供 web_api 复用，非主入口）
 ├── backend/
@@ -75,15 +75,15 @@ cd /Users/Wcg/Desktop/Project_local/海航监控
 
 手动启动（通常不需要）：
 ```bash
-# Web 控制台（React 页面 + API，绑定 127.0.0.1:8501）
+# Web 控制台（React 页面 + API，绑定 127.0.0.1:80）
 env -u ELECTRON_RUN_AS_NODE .venv/bin/python web_api.py
 # 后端抓价
 env -u ELECTRON_RUN_AS_NODE .venv/bin/python daemon.py
 ```
 
-- 页面：http://127.0.0.1:8501（**仅本机可访问**，局域网已不可见）
+- 页面：http://127.0.0.1:80（**仅本机可访问**，局域网已不可见）
 - 由 PenguinHarness 托管时用 run_in_background 双进程常驻（daemon + web_api），
-  不使用 nohup 脚本；重启 web_api 前先 `lsof -nP -i :8501` 确认端口释放。
+  不使用 nohup 脚本；重启 web_api 前先 `lsof -nP -i :80` 确认端口释放。
 - 注意：exec_command 环境带 `ELECTRON_RUN_AS_NODE` 会破坏 Electron 相关进程，
   长驻启动一律 `env -u` 去掉。
 

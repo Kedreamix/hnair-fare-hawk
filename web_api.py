@@ -5,7 +5,7 @@
   price_history.jsonl、run_log.txt），复用 app.py 中经过验证的读写逻辑与文件锁。
 - 生产模式下同时托管 web/dist 静态资源。
 
-运行：.venv/bin/python web_api.py  （绑定 127.0.0.1:8501）
+运行：.venv/bin/python web_api.py  （绑定 0.0.0.0:80，可用 WEB_API_HOST / WEB_API_PORT 覆盖）
 daemon.py 完全不受影响：它只读同一批 JSON 文件，配置保存后下一轮自动生效。
 """
 
@@ -57,15 +57,16 @@ from app import (  # noqa: E402
     update_tasks,
 )
 from backend.notifier import fake_price_hit_payload, send_test_alert, test_feishu  # noqa: E402
-from backend.fetcher import TokenExpiredError, fetch_price_status  # noqa: E402
+from backend.fetcher import TokenExpiredError, fetch_price_status
+from backend.route_map import load_china, network as route_network  # noqa: E402
 import backend.sediment as sediment  # noqa: E402
 import backend.observations as observations  # noqa: E402
 import backend.feishu_ws as feishu_ws  # noqa: E402
 from backend.channels import CHANNEL_LABELS, build_confirm_card, send_channel  # noqa: E402
 from city_codes import city_options, code_to_city_only, code_to_airport_name, resolve_code  # noqa: E402
 
-HOST = "127.0.0.1"
-PORT = int(os.environ.get("WEB_API_PORT", "8501"))
+HOST = os.environ.get("WEB_API_HOST", "0.0.0.0")
+PORT = int(os.environ.get("WEB_API_PORT", "80"))
 DIST_DIR = os.path.join(BASE_DIR, "web", "dist")
 
 MIME_MAP = {
@@ -122,15 +123,15 @@ def _ticket_summary(curl: str, expected_path: str = "") -> Dict[str, Any]:
 
 
 def _endpoint_note(path: str, expected_path: str) -> str:
-    """票据端点提示：PLUS 运行时会改写为 ffl 端点，普通票价使用 airLowFareSearch。"""
+    """票据端点提示。PLUS 必须单独抓取 ffl 请求，不能把其他接口改地址后复用。"""
     if not path:
         return "未识别到请求路径"
     if "ffl" in path:
         return "PLUS 专享端点（ffl/airLowFareSearch）"
+    if "airCtLowFareSearch" in path:
+        return "这是 airCtLowFareSearch，不能当作 PLUS。请在 PLUS 专享入口重新抓取 ffl/airLowFareSearch。"
     if "airLowFareSearch" in path:
         return "低价查询端点（airLowFareSearch）"
-    if "airCtLowFareSearch" in path:
-        return "请求为 airCtLowFareSearch，运行时将改写为 ffl/airLowFareSearch（PLUS 专享）"
     return f"请求路径：{path}"
 
 
@@ -164,6 +165,8 @@ def _notify_channels_view(config: Dict[str, Any]) -> Dict[str, Any]:
         nc = {}
     wecom = nc.get("wecom") or {}
     dingtalk = nc.get("dingtalk") or {}
+    wechat_bot = nc.get("wechat_bot") or {}
+    email = nc.get("email") or {}
     bark = nc.get("bark") or {}
     ntfy = nc.get("ntfy") or {}
     view = {
@@ -179,6 +182,22 @@ def _notify_channels_view(config: Dict[str, Any]) -> Dict[str, Any]:
             "enabled": bool(dingtalk.get("enabled", False)),
             "webhook": _mask_url(dingtalk.get("webhook", "")),
             "secret": _mask_key(dingtalk.get("secret", "")),
+        },
+        "wechat_bot": {
+            "enabled": bool(wechat_bot.get("enabled", False)),
+            "bot_id": _mask_key(wechat_bot.get("bot_id", "")),
+            "secret": _mask_key(wechat_bot.get("secret", "")),
+            "chat_id": str(wechat_bot.get("chat_id", "") or "").strip(),
+            "chat_type": str(wechat_bot.get("chat_type", "") or "single").strip() or "single",
+        },
+        "email": {
+            "enabled": bool(email.get("enabled", False)),
+            "host": str(email.get("host", "") or "").strip(),
+            "port": str(email.get("port", "") or "465").strip(),
+            "username": str(email.get("username", "") or "").strip(),
+            "password": _mask_key(email.get("password", "")),
+            "sender": str(email.get("sender", "") or "").strip(),
+            "receiver": str(email.get("receiver", "") or "").strip(),
         },
         "bark": {
             "enabled": bool(bark.get("enabled", False)),
@@ -215,10 +234,10 @@ def _sanitize_config(config: Dict[str, Any]) -> Dict[str, Any]:
         },
         "proxy": config.get("proxy", ""),
         "sign_refresh": bool(config.get("sign_refresh", False)),
-        # derived_from 表示该档票据未抓包，运行时会自动从另一档派生（共用凭证，改写端点+specialZone）
+        # 普通票可以在缺少自己的请求时借用 PLUS 票据。PLUS 不能借用普通票请求。
         "plus_ticket": {
             **_ticket_summary(plus_curl, "ffl/airLowFareSearch"),
-            "derived_from": "normal" if not plus_curl and normal_curl else "",
+            "derived_from": "",
         },
         "normal_ticket": {
             **_ticket_summary(normal_curl, "airLowFareSearch"),
@@ -404,6 +423,10 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "min_seats": max(int(t.get("min_seats", 1) or 1) for t in group),
             "cabins": sorted({str(c).strip().upper() for t in group for c in (t.get("cabins") or []) if str(c).strip()}),
             "enabled": any(bool(t.get("enabled", True)) for t in group),
+            "disabled_dates": sorted({
+                str(d).strip() for t in group for d in (t.get("disabled_dates") or []) if str(d).strip()
+            }),
+            "created_at": min((str(t.get("created_at") or "") for t in group), default=""),
         })
     return rows
 
@@ -535,6 +558,10 @@ class Handler(BaseHTTPRequestHandler):
                 })
             elif path == "/api/flights/prices":
                 self._flights_prices(parsed.query)
+            elif path == "/api/map/network":
+                _send_json(self, 200, route_network(_get_qs(qs, "product") or None))
+            elif path == "/api/map/china":
+                _send_json(self, 200, load_china())
             elif path == "/api/ticket/raw":
                 fare_type = _get_qs(parsed.query, "fare_type", "plus")
                 config = load_config()
@@ -687,7 +714,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not ids:
                     _send_json(self, 400, {"ok": False, "error": "缺少任务 id。"})
                     return
-                set_tasks_enabled(ids, bool(data.get("enabled", True)))
+                dates = data.get("dates")
+                set_tasks_enabled(ids, bool(data.get("enabled", True)), dates if isinstance(dates, list) else None)
                 _send_json(self, 200, {"ok": True})
             elif path == "/api/tasks/delete":
                 ids = _task_ids(data)

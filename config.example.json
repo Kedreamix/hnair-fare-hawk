@@ -53,6 +53,22 @@
       "webhook": "",
       "secret": ""
     },
+    "wechat_bot": {
+      "enabled": false,
+      "bot_id": "",
+      "secret": "",
+      "chat_id": "",
+      "chat_type": "single"
+    },
+    "email": {
+      "enabled": false,
+      "host": "",
+      "port": "465",
+      "username": "",
+      "password": "",
+      "sender": "",
+      "receiver": ""
+    },
     "bark": {
       "enabled": false,
       "device_key": "",

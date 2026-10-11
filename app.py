@@ -55,6 +55,16 @@ DEFAULT_CONFIG = {
         "urgent_enabled": True,
         "wecom": {"enabled": False, "corp_id": "", "agent_id": "", "secret": "", "user_id": ""},
         "dingtalk": {"enabled": False, "webhook": "", "secret": ""},
+        "wechat_bot": {"enabled": False, "bot_id": "", "secret": "", "chat_id": "", "chat_type": "single"},
+        "email": {
+            "enabled": False,
+            "host": "",
+            "port": "465",
+            "username": "",
+            "password": "",
+            "sender": "",
+            "receiver": "",
+        },
         "bark": {"enabled": False, "device_key": "", "server": "https://api.day.app"},
         "ntfy": {"enabled": False, "topic": "", "server": "https://ntfy.sh"},
     },
@@ -211,17 +221,37 @@ def set_task_enabled(task_id: str, enabled: bool) -> None:
     _write_json(TASKS_PATH, tasks)
 
 
-def set_tasks_enabled(task_ids: List[str], enabled: bool) -> int:
-    """按 id 列表批量启停任务（兼容分组行一次切换多条）。返回受影响条数。"""
+def set_tasks_enabled(task_ids: List[str], enabled: bool, dates: List[str] | None = None) -> int:
+    """按 id 列表批量启停任务。返回受影响条数。
+
+    传入 dates 时只停/开这些日期（同一航班的其他日期不动）；
+    不传 dates 时整班启停。全部日期都停掉后，任务本身标为 enabled=False。
+    """
     ids = {str(i).strip() for i in task_ids if str(i).strip()}
     if not ids:
         return 0
+    picked = {str(d).strip() for d in (dates or []) if str(d).strip()}
     tasks = _read_json(TASKS_PATH, DEFAULT_TASKS)
     touched = 0
     for task in tasks.get("tasks", []):
-        if str(task.get("id", "")).strip() in ids:
+        if str(task.get("id", "")).strip() not in ids:
+            continue
+        all_dates = expand_task_dates(task)
+        if picked:
+            target = picked & set(all_dates)
+            if not target:
+                continue
+            disabled = {str(d).strip() for d in (task.get("disabled_dates") or []) if str(d).strip()}
+            if enabled:
+                disabled -= target
+            else:
+                disabled |= target
+            task["disabled_dates"] = sorted(disabled & set(all_dates))
+            task["enabled"] = bool(set(all_dates) - set(task["disabled_dates"]))
+        else:
             task["enabled"] = bool(enabled)
-            touched += 1
+            task["disabled_dates"] = [] if enabled else list(all_dates)
+        touched += 1
     _write_json(TASKS_PATH, tasks)
     return touched
 
@@ -382,6 +412,12 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
             t["dates"] = merged_dates
             t["date"] = merged_dates[0]
             t["date_end"] = merged_dates[-1]
+            # 重新加入的日期恢复监控，避免之前单独停掉的日期一直停着
+            disabled = {str(d).strip() for d in (t.get("disabled_dates") or []) if str(d).strip()}
+            disabled -= set(dates)
+            t["disabled_dates"] = sorted(disabled & set(merged_dates))
+            if set(merged_dates) - set(t["disabled_dates"]):
+                t["enabled"] = True
             # 当前明确只监控 199 元优惠价档：合并时统一收敛（旧普通票价任务不再保留自定义阈值语义）
             t["fare_type"] = "plus"
             t["target_price"] = 199
@@ -478,6 +514,10 @@ def update_tasks(task_ids: List[str], fields: Dict[str, Any]) -> int:
                 task["dates"] = norm_dates
                 task["date"] = norm_dates[0]
                 task["date_end"] = norm_dates[-1]
+                disabled = {str(d).strip() for d in (task.get("disabled_dates") or []) if str(d).strip()}
+                task["disabled_dates"] = sorted(disabled & set(norm_dates))
+                if not (set(norm_dates) - set(task["disabled_dates"])):
+                    task["enabled"] = False
         if "tiers" in fields:
             new_tiers = _norm_tiers(fields.get("tiers"))
             task["tiers"] = new_tiers
@@ -599,9 +639,12 @@ def save_notify_channels(raw: Dict[str, Any]) -> None:
     field_rules = {
         "wecom": ("corp_id", "agent_id", "user_id", "secret"),
         "dingtalk": ("webhook", "secret"),
+        "wechat_bot": ("bot_id", "secret", "chat_id", "chat_type"),
+        "email": ("host", "port", "username", "password", "sender", "receiver"),
         "bark": ("device_key", "server"),
         "ntfy": ("topic", "server"),
     }
+    secret_keep = {"secret", "device_key", "topic", "password", "bot_id"}
     for name, fields in field_rules.items():
         ch = nc.setdefault(name, dict(DEFAULT_CONFIG["notify_channels"].get(name, {})))
         if not isinstance(ch, dict):
@@ -617,7 +660,18 @@ def save_notify_channels(raw: Dict[str, Any]) -> None:
             if v is None:
                 continue
             val = str(v).strip()
-            if f in ("secret", "device_key", "topic"):
+            if name == "wechat_bot" and f == "chat_type":
+                lowered = val.lower()
+                if lowered in ("group", "2", "群", "群聊"):
+                    val = "group"
+                else:
+                    val = "single"
+            if name == "email" and f == "port":
+                if not val:
+                    val = str(ch.get("port") or "465")
+                elif not val.isdigit() or not (1 <= int(val) <= 65535):
+                    continue
+            if f in secret_keep:
                 # secret 类凭证：空串=不修改；其他字段空串=清空
                 if val:
                     ch[f] = val

@@ -61,6 +61,26 @@ def test_extracts_nested_itineraries_price_and_full_flight_number():
     assert fetcher._format_flight_code(itineraries[0]["flightSegments"][0]) == "HU7204"
 
 
+def test_plus_profile_rejects_non_ffl_capture(tmp_path, monkeypatch):
+    """airCtLowFareSearch 缺少 token，不能改写成 ffl 端点。"""
+    command = """curl --url 'https://example.test/ticket/lfs/airCtLowFareSearch?hnairSign=valid-sign' \\
+  -H 'appver: 10.17.2' \\
+  -b 'session=masked' \\
+  --data-raw '{"data": {"originDestinations": [{"origin": "AAA", "destination": "BBB", "departureDate": "2026-01-01"}]}}'
+"""
+    (tmp_path / "config.json").write_text(
+        json.dumps({"plus_curl": command}), encoding="utf-8"
+    )
+    monkeypatch.setattr(fetcher, "BASE_DIR", tmp_path)
+
+    try:
+        fetcher._build_request_profile("SHE", "CAN", "2026-09-16", "plus")
+    except fetcher.TokenExpiredError as exc:
+        assert "不能改地址复用签名" in str(exc)
+    else:
+        raise AssertionError("expected TokenExpiredError")
+
+
 def test_captured_plus_profile_keeps_sign_and_updates_route(tmp_path, monkeypatch):
     command = """curl --url 'https://example.test/ffl/airLowFareSearch?token=masked&hnairSign=valid-sign' \\
   -H 'appver: 10.17.2' \\
@@ -107,8 +127,8 @@ def test_derived_normal_profile_from_plus_ticket(tmp_path, monkeypatch):
     assert profile["headers"]["cookie"] == "session=masked"
 
 
-def test_derived_plus_profile_from_normal_ticket(tmp_path, monkeypatch):
-    """只有普通票据时，PLUS 档自动派生：复用凭证，改写端点并补 specialZone。"""
+def test_plus_profile_is_not_derived_from_normal_ticket(tmp_path, monkeypatch):
+    """普通票签名不能改地址当成 PLUS 请求。"""
     command = """curl --url 'https://example.test/airLowFareSearch?token=masked&hnairSign=valid-sign' \\
   -H 'appver: 10.17.2' \\
   -b 'session=masked' \\
@@ -119,13 +139,12 @@ def test_derived_plus_profile_from_normal_ticket(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(fetcher, "BASE_DIR", tmp_path)
 
-    profile = fetcher._build_request_profile("SHE", "CAN", "2026-09-16", "plus")
-
-    assert profile["derived_from"] == "normal"
-    assert profile["url"] == fetcher.REQUEST_URL_PLUS
-    assert profile["payload"]["data"]["specialZone"] == "ffl"
-    assert profile["query"]["hnairSign"] == "valid-sign"
-    assert profile["headers"]["cookie"] == "session=masked"
+    try:
+        fetcher._build_request_profile("SHE", "CAN", "2026-09-16", "plus")
+    except fetcher.TokenExpiredError as exc:
+        assert "ffl/airLowFareSearch" in str(exc)
+    else:
+        raise AssertionError("expected TokenExpiredError")
 
 
 def _mk_segment(airline: str, flight_no: str, dep: str, arr: str) -> dict:
@@ -331,7 +350,6 @@ def _mk_response(status_code=200, data=None):
     resp.status_code = status_code
     resp._data = data if data is not None else {"success": True, "data": {"originDestinations": []}}
 
-    @staticmethod
     def json():
         return resp._data
 
@@ -466,3 +484,15 @@ def test_fetch_price_status_auth_raises_token_expired(monkeypatch):
         raise AssertionError("should have raised")
     except fetcher.TokenExpiredError:
         pass
+
+
+def test_query_gate_spaces_requests(tmp_path, monkeypatch):
+    import time as _time
+    from backend import fetcher as _f
+
+    monkeypatch.setattr(_f, "QUERY_GATE_PATH", tmp_path / "gate.json")
+    monkeypatch.setattr(_f, "_min_query_interval", lambda: 1)
+    _f._wait_query_gate()
+    start = _time.time()
+    _f._wait_query_gate()
+    assert _time.time() - start >= 0.9

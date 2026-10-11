@@ -179,10 +179,42 @@ def test_query_product_2666_does_not_include_666_only():
 def test_meta_shape():
     m = sediment.meta()
     assert m["count"] == len(sediment.load_records())
-    assert m["version"] and m["version"]["count"] == m["count"]
+    assert m["version"] and m["version"]["count"] == 1733
+    assert m["count"] > m["version"]["count"]
     assert "city_options" in m and len(m["city_options"]) > 0
     assert set(m["product_dist"].keys()) <= {"666", "2666", "666/2666"}
     assert "海口" in "".join(m["city_options"])
+    assert m["source_dist"].get("plus_winter_2026", 0) >= 1400
+
+
+def test_same_flight_keeps_each_schedule():
+    """同一航班号排在一起，但不同时刻和日期段保持原样，不合成一条。"""
+    rows = sediment.query(from_city="深圳", to_city="北京", flight_no="HU7702")
+    assert [row["dep_time"] for row in rows] == ["07:10", "07:30", "07:30"]
+    assert rows[0]["arr_time"] == "10:15"
+    assert rows[0]["days"] == [1, 2, 3, 4, 5, 6, 7]
+    assert rows[0]["effective_dates"] == [["2026-09-02", "2026-10-24"]]
+    assert rows[1]["days"] == [3, 7]
+    assert rows[1]["effective_dates"] == [["2026-10-25", "2027-03-24"]]
+    assert rows[2]["days"] == [1, 2, 4, 5, 6]
+    assert rows[2]["effective_dates"] == [["2026-10-26", "2027-03-27"]]
+    winter = sediment.query(from_city="深圳", to_city="北京", flight_no="HU7702", date_str="2026-11-04")
+    assert len(winter) == 1
+    assert winter[0]["dep_time"] == "07:30"
+    assert winter[0]["effective_dates"] == [["2026-10-25", "2027-03-24"]]
+
+
+def test_winter_routes_are_queryable():
+    """冬春表按班期和适用日期可查，1 月日期落在 2027 而不是 2026。"""
+    rows = sediment.query(from_city="阿勒泰", to_city="西安", date_str="2026-11-02", flight_no="9H8336")
+    assert len(rows) == 1
+    assert rows[0]["source"] == "plus_winter_2026"
+    assert rows[0]["season"] == "2026冬春"
+    assert rows[0]["effective_dates"] == [["2026-10-25", "2027-03-27"]]
+    assert sediment.query(from_city="阿勒泰", to_city="西安", date_str="2026-10-10", flight_no="9H8336") == []
+    january = sediment.query(from_city="亳州", to_city="南宁", date_str="2027-01-04", flight_no="GX8824")
+    assert january and january[0]["effective_dates"] == [["2027-01-01", "2027-01-15"]]
+    assert sediment.query(from_city="亳州", to_city="南宁", date_str="2026-01-04", flight_no="GX8824") == []
 
 
 def test_city_codes_merged_with_sediment():

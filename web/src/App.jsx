@@ -1,13 +1,13 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Alert, App as AntApp, Button, Card, Col, Collapse, ConfigProvider, DatePicker, Descriptions, Dropdown, Empty, Form, Input,
+  Alert, App as AntApp, Button, Card, Checkbox, Col, Collapse, ConfigProvider, DatePicker, Descriptions, Dropdown, Empty, Form, Input, Tabs,
   InputNumber, Layout, Menu, Modal, Popconfirm, Popover, Radio, Result, Row, Select, Space, Spin,
   Statistic, Steps, Switch, Table, Tag, TimePicker, Tooltip, Typography, theme as antdTheme,
 } from 'antd'
 import {
-  CalendarIcon, ChevronLeftIcon, ChevronRightIcon, CloseIcon, CompassIcon, DeleteIcon, EditIcon, HistoryIcon, MonitorIcon,
+  CalendarIcon, ChevronLeftIcon, ChevronRightIcon, CloseIcon, CompassIcon, DeleteIcon, EditIcon, HistoryIcon, MonitorIcon, SwapIcon,
  NotifyIcon, OverviewIcon, PlusIcon, PowerIcon, QuestionIcon, SendIcon, SettingsIcon, TasksIcon, BrandIcon,
- RadarIcon, TargetIcon,
+ RadarIcon, TargetIcon, MoonIcon, SunriseIcon, SunIcon, SunsetIcon, LuggageIcon, MapIcon,
 } from './icons.jsx'
 import dayjs from 'dayjs'
 import { api, formatTs } from './api.js'
@@ -149,6 +149,71 @@ function expandRecordDates(records = []) {
   return [...seen].sort()
 }
 
+function suggestReturnDates(outbound, allowedDates) {
+  const allowed = new Set(allowedDates || [])
+  const picked = new Set()
+  for (const leg of outbound || []) {
+    for (const day of leg.selected || []) {
+      const next = dayjs(day).add(1, 'day').format('YYYY-MM-DD')
+      if (allowed.has(next)) picked.add(next)
+    }
+  }
+  return [...picked].sort()
+}
+
+function recordsToMonitorGroups(recs, tierBlockRules, todayStr) {
+  const groups = []
+  const idx = {}
+  for (const r of recs || []) {
+    const gkey = `${r.origin?.city || ''}|${r.dest?.city || ''}|${r.flight_no || ''}|${r.dep_time || ''}|${r.arr_time || ''}`
+    if (!(gkey in idx)) {
+      idx[gkey] = groups.length
+      groups.push({
+        key: gkey,
+        from_city: r.origin.city,
+        from_iata: r.origin.iata,
+        to_city: r.dest.city,
+        to_iata: r.dest.iata,
+        flight_no: r.flight_no || '',
+        dep_time: r.dep_time || '',
+        arr_time: r.arr_time || '',
+        product: new Set(),
+        dates: [],
+        selected: [],
+        rows: [],
+      })
+    }
+    const g = groups[idx[gkey]]
+    for (const p of String(r.product || '').split('/')) if (p) g.product.add(p)
+    g.rows.push(r)
+  }
+  for (const g of groups) {
+    g.product = [...g.product].sort().join('/')
+    g.dates = filterTierDates(expandRecordDates(g.rows), g.product, tierBlockRules).filter((d) => d >= todayStr)
+  }
+  groups.sort((a, b) => String(a.dep_time).localeCompare(String(b.dep_time)) || String(a.flight_no).localeCompare(String(b.flight_no)))
+  return groups
+}
+
+function outboundLegs(groups) {
+  return (groups || []).filter((g) => g.direction !== 'back').map((g) => ({
+    dep_time: g.dep_time,
+    arr_time: g.arr_time,
+    selected: g.selected || [],
+  }))
+}
+
+// 回程日期跟着去程走，默认是去程的第二天。手动改过日历或取消勾选的不再覆盖。
+function withReturnSuggestions(groups) {
+  const legs = outboundLegs(groups)
+  return (groups || []).map((g) => {
+    if (g.direction !== 'back' || g.returnTouched) return g
+    const selected = suggestReturnDates(legs, g.dates)
+    if (g.choicePinned) return { ...g, selected }
+    return { ...g, selected, checked: selected.length > 0 }
+  })
+}
+
 function HitTag({ hit }) {
   return hit ? <Tag color="magenta">低价命中</Tag> : <Tag>监控中</Tag>
 }
@@ -233,7 +298,7 @@ function Overview({ data, onGo, onToggleStatus, onChanged, msg }) {
           </div>
           <div className="radar-status-note">daemon 按已设定时段轮询抓价，命中低价后推送通知。</div>
           <div className="radar-meta">
-            <span className="mono">127.0.0.1:8501</span>
+            <span className="mono">{window.location.host}</span>
             <span>监控任务 {stats.task_count} · 启用 {stats.enabled_count}</span>
           </div>
         </div>
@@ -266,7 +331,7 @@ function Overview({ data, onGo, onToggleStatus, onChanged, msg }) {
             <div className="stat-row">
               <span className="stat-ico green"><TargetIcon /></span>
               <div className="stat-body">
-                <Statistic title="低价命中记录" value={stats.hit_count_24h} valueStyle={{ color: 'var(--color-low-price)' }} />
+                <Statistic title="低价命中记录" value={stats.hit_count_24h} valueStyle={stats.hit_count_24h > 0 ? { color: 'var(--color-low-price)' } : undefined} />
                 <div className="muted">命中监控目标价的提醒条数（档位 666/2666，近 50 条样本）</div>
               </div>
             </div>
@@ -338,70 +403,392 @@ function Overview({ data, onGo, onToggleStatus, onChanged, msg }) {
 }
 
 /* ================= 任务 ================= */
-function Tasks({ data, onChanged, msg, onGo, tierBlockRules }) {
+function ReturnPickList({ groups, onToggle, onDates }) {
+  if (!groups.length) return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有找到回程航班" />
+  return groups.map((g) => {
+    const brief = (g.selected || []).map((d) => String(d).slice(5)).join('、')
+    return (
+      <Card
+        key={g.key}
+        size="small"
+        style={{ marginBottom: 12 }}
+        title={
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%', minWidth: 0 }}>
+            <Checkbox checked={!!g.checked} onChange={(e) => onToggle(g.key, e.target.checked)} />
+            <Tag color="blue" style={{ marginInlineEnd: 0 }}>回程</Tag>
+            <span className="mono" style={{ fontWeight: 600, fontSize: 12 }}>{g.flight_no || '—'}</span>
+            <Typography.Text type="secondary" style={{ fontSize: 11 }}>{g.dep_time || '--:--'} → {g.arr_time || '--:--'}</Typography.Text>
+            <span style={{ fontSize: 12 }}>{cityWithProvince(g.from_city)} → {cityWithProvince(g.to_city)}</span>
+          </div>
+        }
+        extra={<Tag color={String(g.product).includes('2666') ? 'purple' : 'gold'}>{g.product}</Tag>}
+      >
+        {g.checked ? (
+          <>
+            <div className="muted" style={{ marginBottom: 6, fontSize: 12 }}>
+              {brief ? `已按去程次日预选 ${brief}。` : '去程次日这班不飞。'}
+              可以改成当天或其他日期。
+            </div>
+            <DatePickCalendar dates={g.dates} value={g.selected} onChange={(v) => onDates(g.key, v)} />
+          </>
+        ) : (
+          <div className="muted" style={{ fontSize: 12 }}>
+            {brief ? `次日可飞 ${brief}。勾选后加入监控。` : '去程次日这班不飞。勾选后可以自己选日期。'}
+          </div>
+        )}
+      </Card>
+    )
+  })
+}
+
+function pairMonitorRows(tasks) {
+  const pairKey = (t) => [t.from_code, t.to_code].sort().join('|')
+  const byPair = new Map()
+  tasks.forEach((t, i) => {
+    const key = pairKey(t)
+    if (!byPair.has(key)) byPair.set(key, [])
+    byPair.get(key).push(i)
+  })
+  const roundKeys = new Set()
+  for (const [key, idxs] of byPair) {
+    const dirs = new Set(idxs.map((i) => `${tasks[i].from_code}>${tasks[i].to_code}`))
+    if (dirs.size >= 2) roundKeys.add(key)
+  }
+  const used = new Set()
+  const rows = []
+  tasks.forEach((t, i) => {
+    if (used.has(i)) return
+    const key = pairKey(t)
+    if (!roundKeys.has(key)) {
+      used.add(i)
+      rows.push({ key: `single-${(t.ids || [t.id]).join('-')}`, round: false, legs: [t] })
+      return
+    }
+    const members = byPair.get(key).map((j) => tasks[j])
+    byPair.get(key).forEach((j) => used.add(j))
+    const earliest = [...members].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))[0]
+    const outDir = `${earliest.from_code}>${earliest.to_code}`
+    const legs = [
+      ...members.filter((m) => `${m.from_code}>${m.to_code}` === outDir),
+      ...members.filter((m) => `${m.from_code}>${m.to_code}` !== outDir),
+    ].map((m) => ({ ...m, leg: `${m.from_code}>${m.to_code}` === outDir ? 'out' : 'back' }))
+    legs.sort((a, b) => {
+      if (a.leg !== b.leg) return a.leg === 'out' ? -1 : 1
+      return String(a.dep_time || '').localeCompare(String(b.dep_time || ''))
+        || String(a.flight_no || '').localeCompare(String(b.flight_no || ''))
+    })
+    rows.push({ key: `round-${key}`, round: true, legs })
+  })
+  return rows
+}
+
+function monitorDayLabel(iso) {
+  const day = String(iso || '')
+  const md = day.slice(5).replace('-', '/')
+  const week = cnWeekday(day)
+  return week ? `${md} ${week}` : md
+}
+
+function monitorDateGroups(legs) {
+  const days = [...new Set((legs || []).flatMap((leg) => leg.dates || []))].filter(Boolean).sort()
+  const clusters = []
+  days.forEach((day) => {
+    const last = clusters[clusters.length - 1]
+    const gap = last ? dayjs(day).startOf('day').diff(dayjs(last[last.length - 1]).startOf('day'), 'day') : 99
+    if (!last || gap > 4) clusters.push([day])
+    else last.push(day)
+  })
+  const groups = clusters.map((dates) => {
+    const nights = dayjs(dates[dates.length - 1]).startOf('day').diff(dayjs(dates[0]).startOf('day'), 'day')
+    const span = dates.length === 1
+      ? monitorDayLabel(dates[0])
+      : `${monitorDayLabel(dates[0])} – ${monitorDayLabel(dates[dates.length - 1])}`
+    const set = new Set(dates)
+    return {
+      key: dates[0],
+      label: span,
+      stay: nights > 0 ? `${nights + 1}天${nights}晚` : '',
+      legs: (legs || []).filter((leg) => (leg.dates || []).some((day) => set.has(day))).map((leg) => ({
+        task: leg,
+        dates: (leg.dates || []).filter((day) => set.has(day)),
+      })),
+    }
+  })
+  const undated = (legs || []).filter((leg) => !(leg.dates || []).length)
+  if (undated.length) groups.push({ key: 'none', label: '未选日期', stay: '', legs: undated.map((leg) => ({ task: leg, dates: [] })) })
+  return groups
+}
+
+async function loadFlightDates(t) {
+  const from = cityNameOf(t.from_city || t.from_code)
+  const to = cityNameOf(t.to_city || t.to_code)
+  const flightNo = String(t.flight_no || '').trim()
+  let r = await api.flightQuery({ from, to, flight_no: flightNo, limit: 300 })
+  let recs = r.records || []
+  // 底表查不到该航班号时：优先匹配起降时刻相同的记录（班期贴近该任务对应航班），
+  // 仍无匹配才退化为整条航线并集，避免把其他航班的可飞日期带进来
+  if (!recs.length && flightNo) {
+    r = await api.flightQuery({ from, to, limit: 300 })
+    recs = (r.records || []).filter((x) => String(x.dep_time || '') === String(t.dep_time || ''))
+    if (!recs.length) recs = r.records || []
+  }
+  return expandRecordDates(recs)
+}
+
+function taskDetailRequest(task, day) {
+  return {
+    from: task.from_city || task.from_code,
+    to: task.to_city || task.to_code,
+    flightNo: task.flight_no || '',
+    date: day,
+  }
+}
+
+function roundDetailRequest(group) {
+  let best = null
+  for (const out of group.legs.filter((leg) => leg.task.leg !== 'back')) {
+    for (const outDay of out.dates) {
+      for (const back of group.legs.filter((leg) => leg.task.leg === 'back')) {
+        for (const backDay of back.dates) {
+          const gap = dayjs(backDay).startOf('day').diff(dayjs(outDay).startOf('day'), 'day')
+          if (gap <= 0) continue
+          if (!best || outDay < best.outDay || (outDay === best.outDay && gap < best.gap)) {
+            best = { out: out.task, outDay, back: back.task, backDay, gap }
+          }
+        }
+      }
+    }
+  }
+  if (!best) return null
+  return {
+    round: true,
+    outTask: best.out,
+    backTask: best.back,
+    from: best.out.from_city || best.out.from_code,
+    to: best.out.to_city || best.out.to_code,
+    outDate: best.outDay,
+    backDate: best.backDay,
+    outFlight: best.out.flight_no || '',
+    backFlight: best.back.flight_no || '',
+    date: best.outDay,
+  }
+}
+
+function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
   const tasks = data.tasks || []
   // 「只能查/显示当天及以后」：过去日期从所有可选池剔除（编辑弹窗日期选项、档位联动、兜底池）
   const todayStr = dayjs().format('YYYY-MM-DD')
 
-  const toggleEnabled = async (t, enabled) => {
+  const toggleEnabled = async (t, enabled, dates) => {
     try {
-      await api.setTaskEnabled(t.ids || [t.id], enabled)
-      msg.success(enabled ? '监控已开启' : '监控已停止')
+      await api.setTaskEnabled(t.ids || [t.id], enabled, dates)
+      const oneDay = dates && dates.length === 1
+      msg.success(enabled ? (oneDay ? '这一天的监控已开启' : '监控已开启') : (oneDay ? '已停止这一天，其他日期继续监控' : '监控已停止'))
       onChanged()
     } catch (e) { msg.error(e.message) }
   }
 
-  const doDelete = async (t) => {
+  const groupState = (group) => {
+    let on = 0
+    let off = 0
+    group.legs.forEach(({ task: t, dates }) => {
+      const paused = new Set(t.disabled_dates || [])
+      dates.forEach((day) => { if (paused.has(day)) off += 1; else on += 1 })
+    })
+    return off === 0 ? 'on' : on === 0 ? 'off' : 'partial'
+  }
+
+  const deleteGroup = async (group) => {
     try {
-      await api.deleteTask(t.ids || [t.id])
-      msg.success(`已删除监控：${t.from_city} → ${t.to_city}`)
+      for (const { task: t, dates } of group.legs) {
+        const drop = new Set(dates)
+        const rest = (t.dates || []).filter((day) => !drop.has(day))
+        if (rest.length) await api.updateTasks(t.ids || [t.id], { dates: rest })
+        else await api.deleteTask(t.ids || [t.id])
+      }
+      msg.success(`已删除 ${group.label} 这组往返，其他日期还在`)
       onChanged()
     } catch (e) { msg.error(e.message) }
+  }
+
+  const [pairEdit, setPairEdit] = useState(null)
+  const [pairOpts, setPairOpts] = useState({ out: [], back: [], loading: false })
+  const [pairBusy, setPairBusy] = useState(false)
+  const [pairForm] = Form.useForm()
+  const pairOutDate = Form.useWatch('outDate', pairForm)
+  useEffect(() => {
+    if (!pairEdit || !pairOutDate) return
+    const back = pairForm.getFieldValue('backDate')
+    if (back && back <= pairOutDate) {
+      pairForm.setFieldsValue({ backDate: pairOpts.back.find((day) => day > pairOutDate) })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pairOutDate])
+  useEffect(() => {
+    if (!pairEdit || !pairOutDate) return
+    const back = pairForm.getFieldValue('backDate')
+    if (back && back <= pairOutDate) {
+      pairForm.setFieldsValue({ backDate: pairOpts.back.find((day) => day > pairOutDate) })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pairOutDate])
+
+  const openPairEdit = async (group, req) => {
+    const out = req.outTask
+    setPairEdit({ group, req })
+    setPairOpts({ out: [], back: [], loading: true })
+    pairForm.setFieldsValue({
+      outDate: req.outDate,
+      backDate: req.backDate,
+      tiers: out.tiers || [],
+      min_seats: Number(out.min_seats || 1),
+      cabins: out.cabins || [],
+    })
+    const safe = (task) => loadFlightDates(task).catch(() => [])
+    const [outDates, backDates] = await Promise.all([safe(out), safe(req.backTask)])
+    const keep = (task, list) => {
+      const pool = filterTierDates(list.length ? list : (task.dates || []), String(task.product || ''), tierBlockRules)
+      return [...new Set(pool)].filter((d) => d >= todayStr).sort()
+    }
+    setPairOpts({ out: keep(out, outDates), back: keep(req.backTask, backDates) })
+  }
+
+  const savePairEdit = async () => {
+    let v
+    try {
+      v = await pairForm.validateFields()
+    } catch (e) { return }
+    const { req } = pairEdit
+    const nextDates = (task, oldDay, newDay) => (
+      [...new Set([...(task.dates || []).filter((day) => day !== oldDay), newDay])].sort()
+    )
+    const extra = { tiers: v.tiers || [], min_seats: Number(v.min_seats || 1), cabins: v.cabins || [] }
+    setPairBusy(true)
+    try {
+      await api.updateTasks(req.outTask.ids || [req.outTask.id], { dates: nextDates(req.outTask, req.outDate, v.outDate), ...extra })
+      await api.updateTasks(req.backTask.ids || [req.backTask.id], { dates: nextDates(req.backTask, req.backDate, v.backDate), ...extra })
+      msg.success('往返监控已更新')
+      setPairEdit(null)
+      onChanged()
+    } catch (e) {
+      msg.error(e.message)
+    } finally {
+      setPairBusy(false)
+    }
+  }
+
+  const toggleGroup = async (group, enabled) => {
+    try {
+      for (const { task: t, dates } of group.legs) {
+        if (dates.length) await api.setTaskEnabled(t.ids || [t.id], enabled, dates)
+      }
+      msg.success(enabled ? `${group.label} 往返已开启监控` : `${group.label} 往返已停止，其他日期继续监控`)
+      onChanged()
+    } catch (e) { msg.error(e.message) }
+  }
+
+  const doDelete = async (t, day) => {
+    try {
+      const rest = (t.dates || []).filter((item) => item !== day)
+      if (!day || !rest.length) {
+        await api.deleteTask(t.ids || [t.id])
+        msg.success(`已删除监控：${t.from_city} → ${t.to_city}`)
+      } else {
+        await api.updateTasks(t.ids || [t.id], { dates: rest })
+        msg.success(`已删除 ${monitorDayLabel(day)}，其他日期还在`)
+      }
+      onChanged()
+    } catch (e) { msg.error(e.message) }
+  }
+
+  const [returnSource, setReturnSource] = useState(null)
+  const [returnGroups, setReturnGroups] = useState([])
+  const [returnLoading, setReturnLoading] = useState(false)
+  const [returnBusy, setReturnBusy] = useState(false)
+
+  const openReturn = async (t) => {
+    setReturnSource(t)
+    setReturnGroups([])
+    setReturnLoading(true)
+    try {
+      const r = await api.flightQuery({
+        from: cityNameOf(t.to_city || t.to_code),
+        to: cityNameOf(t.from_city || t.from_code),
+        limit: 300,
+      })
+      const legs = [{
+        dep_time: t.dep_time,
+        arr_time: t.arr_time,
+        selected: (t.dates || []).filter((d) => d >= todayStr),
+      }]
+      const groups = recordsToMonitorGroups(r.records || [], tierBlockRules, todayStr).map((g) => {
+        const selected = suggestReturnDates(legs, g.dates)
+        return { ...g, direction: 'back', selected, checked: selected.length > 0 }
+      })
+      setReturnGroups(groups)
+      if (!groups.length) msg.info('没有找到回程航班。')
+    } catch (e) {
+      msg.error(e.message)
+    } finally {
+      setReturnLoading(false)
+    }
+  }
+
+  const confirmReturn = async () => {
+    const source = returnSource
+    if (!source) return
+    const items = returnGroups
+      .filter((g) => g.checked && (g.selected || []).length)
+      .map((g) => {
+        const row = g.rows[0] || {}
+        const item = {
+          from_code: g.from_iata || row.origin?.iata,
+          to_code: g.to_iata || row.dest?.iata,
+          dates: g.selected,
+          product: g.product,
+          tiers: source.tiers || [],
+          flight_no: row.flight_no || g.flight_no || '',
+          dep_time: g.dep_time || '',
+          arr_time: g.arr_time || '',
+        }
+        if (Number(source.min_seats) >= 2) item.min_seats = source.min_seats
+        if (source.cabins && source.cabins.length) item.cabins = source.cabins
+        return item
+      })
+    if (!items.length) {
+      msg.error('请至少勾选一个回程航班，并保留一个日期。')
+      return
+    }
+    setReturnBusy(true)
+    try {
+      const r = await api.addTasksBatch(items)
+      msg.success(r.message || '回程监控已创建')
+      setReturnSource(null)
+      if (onChanged) onChanged()
+    } catch (e) {
+      msg.error(e.message)
+    } finally {
+      setReturnBusy(false)
+    }
   }
 
   // ---- 编辑弹窗 ----
   const [editRow, setEditRow] = useState(null) // 当前编辑的分组行（null=关闭）
   const [editBusy, setEditBusy] = useState(false)
-  const [cityOpts, setCityOpts] = useState([]) // 城市选项 {value: 三字码, label: 城市机场（IATA）}
   const [dateOpts, setDateOpts] = useState([]) // 该航线真实可飞日期（编辑弹窗日期选项，逐日）
   const [dateLoading, setDateLoading] = useState(false)
   const [editForm] = Form.useForm()
   // 档位条件（多选白名单，空=不限）：编辑弹窗日期池随其联动（档位×日期规则，如 666 节假日不可用）
   const editTiers = Form.useWatch('tiers', editForm)
 
-  // 城市选项：首次打开编辑弹窗时拉取一次（/api/city/options 返回「城市机场（IATA）」列表）
-  const ensureCityOpts = async () => {
-    if (cityOpts.length) return
-    try {
-      const r = await api.cityOptions()
-      setCityOpts((r.options || []).map((s) => {
-        const m = String(s).match(/^(.*)（([A-Z0-9]{3})）$/)
-        return m ? { value: m[2], label: `${m[1]}（${m[2]}）` } : { value: s, label: s }
-      }))
-    } catch (e) { /* 选项拉取失败不影响编辑（可手输三字码） */ }
-  }
-
   // 拉取该航线真实可飞日期（/api/flights/query 的 effective_dates 区间展开成逐日），作为编辑弹窗日期选项；
   // 只保留可飞日期：原任务里无效日期在打开弹窗时剔除
   const ensureDateOpts = async (t) => {
     setDateLoading(true)
     try {
-      const from = cityNameOf(t.from_city || t.from_code)
-      const to = cityNameOf(t.to_city || t.to_code)
-      const flightNo = String(t.flight_no || '').trim()
-      let r = await api.flightQuery({ from, to, flight_no: flightNo, limit: 300 })
-      let recs = r.records || []
-      // 底表查不到该航班号时：优先匹配起降时刻相同的记录（班期贴近该任务对应航班），
-      // 仍无匹配才退化为整条航线并集，避免把其他航班的可飞日期带进来
-      if (!recs.length && flightNo) {
-        r = await api.flightQuery({ from, to, limit: 300 })
-        recs = (r.records || []).filter((x) => String(x.dep_time || '') === String(t.dep_time || ''))
-        if (!recs.length) recs = r.records || []
-      }
-      // 只保留班期日历里可兑换的日期（区间 + 班期匹配，与 ScheduleCalendar 判定一致）；
       // 档位×日期规则（tier_block_rules，如 666 档十一/五一/暑运不可用）不在拉取时固化，
       // 由渲染层按弹窗内「档位条件」实时过滤（见 dateOptions / 联动 useEffect）
-      const dates = expandRecordDates(recs)
+      const dates = await loadFlightDates(t)
       setDateOpts(dates)
       if (dates.length) {
         const cur = (editForm.getFieldValue('dates') || []).map((d) => String(d).trim()).filter((d) => dates.includes(d))
@@ -417,11 +804,8 @@ function Tasks({ data, onChanged, msg, onGo, tierBlockRules }) {
 
   const openEdit = async (t) => {
     setEditRow(t)
-    ensureCityOpts()
     ensureDateOpts(t)
     editForm.setFieldsValue({
-      from_code: t.from_code,
-      to_code: t.to_code,
       flight_no: t.flight_no || '',
       dep_time: t.dep_time || '',
       arr_time: t.arr_time || '',
@@ -458,13 +842,6 @@ function Tasks({ data, onChanged, msg, onGo, tierBlockRules }) {
     } finally {
       setEditBusy(false)
     }
-  }
-
-  const citySelectProps = {
-    showSearch: true,
-    optionFilterProp: 'label',
-    options: cityOpts,
-    placeholder: '搜索城市 / 机场 / 三字码',
   }
 
   // 档位×日期规则生效档位：弹窗内「档位条件」有值用其值，空=不限→按任务产品档位计算
@@ -516,171 +893,201 @@ function Tasks({ data, onChanged, msg, onGo, tierBlockRules }) {
       .join('；')
   }
 
-  // 监控日期行：一行内最多展示 4 个日期 + 其余数量，悬停查看全部
-  // （单行展示不换行，超出部分收起为“+N”Tag，避免把航线列撑成多行换行）
-  const DateCell = ({ dates }) => {
+  const taskRows = useMemo(() => pairMonitorRows(tasks), [tasks])
+  const legKey = (t) => (t.ids || [t.id]).join('-')
+  const shortDates = (dates) => {
     const list = dates || []
-    if (!list.length) return <Typography.Text type="secondary" style={{ fontSize: 12 }}>—</Typography.Text>
-    const shown = list.slice(0, 4)
+    if (!list.length) return '未选日期'
+    const shown = list.slice(0, 4).map((d) => monitorDayLabel(d))
     const rest = list.length - shown.length
-    const tip = (
-      <div style={{ maxWidth: 320, maxHeight: 260, overflow: 'auto', fontSize: 12, lineHeight: 1.9 }}>
-        {list.map((d) => <div key={d}>{d}</div>)}
-      </div>
-    )
-    return (
-      <Tooltip title={tip} placement="top">
-        <Space size={4} style={{ cursor: 'default', flexWrap: 'nowrap', maxWidth: '100%', overflow: 'hidden' }}>
-          <Typography.Text type="secondary" style={{ fontSize: 12, flexShrink: 0 }}>监控：</Typography.Text>
-          {shown.map((d) => <Tag key={d} style={{ marginInlineEnd: 0, flexShrink: 0 }}>{d}</Tag>)}
-          {rest > 0 && <Tag color="blue" style={{ marginInlineEnd: 0, flexShrink: 0 }}>+{rest}</Tag>}
-        </Space>
-      </Tooltip>
-    )
+    return `${shown.join('、')}${rest ? ` +${rest}` : ''}`
   }
-
-  const columns = [
-    {
-      title: '航线', key: 'route', width: 520,
-      render: (_, t) => (
-        <Space direction="vertical" size={3} style={{ padding: '4px 0' }}>
-          {/* 标题行：航班号 + 城市（省份） → 城市（省份） + 经停/中转 tag */}
-          <Space size={6} wrap style={{ fontWeight: 650 }}>
-            <span className="mono" style={{ fontWeight: 700 }}>{t.flight_no || '—'}</span>
-            <span className="route-line">
-              <span>{cityWithProvince(t.from_city)}</span>
-              <i aria-hidden="true" />
-              <span>{cityWithProvince(t.to_city)}</span>
-            </span>
-            {stopTag(t)}
-          </Space>
-          {/* 机场 / 航站楼行 */}
-          <Typography.Text type="secondary" style={{ fontSize: 12, lineHeight: 1.6 }}>
-            {t.from_code} · {(t.from_airport || '').replace('机场', '')}{t.from_terminal ? ` · ${t.from_terminal}` : ''}
-            <ChevronRightIcon size={10} style={{ color: 'var(--color-muted)', margin: '0 4px' }} />
-            {t.to_code} · {(t.to_airport || '').replace('机场', '')}{t.to_terminal ? ` · ${t.to_terminal}` : ''}
-          </Typography.Text>
-          {/* 起降时间行 + 经停详情小字 */}
-          <Space size={8} wrap>
-            <span className="mono" style={{ fontSize: 12, fontWeight: 650, color: 'var(--color-ink)' }}>{t.dep_time || '--:--'} → {t.arr_time || '--:--'}</span>
-            {!(t.dep_time && t.arr_time) && (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>时刻待查询</Typography.Text>
-            )}
-            {stopDetail(t) && (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>{stopDetail(t)}</Typography.Text>
-            )}
-          </Space>
-          {/* 监控日期行：收敛为 3 个 + 其余数量，悬停查看全部 */}
-          <DateCell dates={t.dates} />
-        </Space>
-      ),
-    },
-    {
-      title: '档位', key: 'product', width: 150,
-      render: (_, t) => {
-        const parts = String(t.product || '').split('/').map((s) => s.trim()).filter(Boolean)
-        if (!parts.length) return <Typography.Text type="secondary">—</Typography.Text>
-        return parts.map((p) => (
-          <Tag key={p} color={p === '666' ? 'gold' : 'purple'} style={{ marginInlineEnd: 4 }}>{p}</Tag>
-        ))
-      },
-    },
-    {
-      title: '提醒档位', key: 'tiers', width: 130,
-      render: (_, t) => {
-        const list = t.tiers || []
-        if (!list.length) return <Typography.Text type="secondary">不限</Typography.Text>
-        return list.map((p) => (
-          <Tag key={p} color="gold" style={{ marginInlineEnd: 4 }}>{p}</Tag>
-        ))
-      },
-    },
-    {
-      title: '目标价', key: 'target', width: 100,
-      render: () => <span style={{ color: 'var(--color-low-price)', fontWeight: 700 }}>¥199</span>,
-    },
-    {
-      title: '余票条件', key: 'seat_cond', width: 140,
-      render: (_, t) => {
-        const parts = []
-        if (Number(t.min_seats || 1) > 1) parts.push(`≥${t.min_seats}张`)
-        if (t.cabins && t.cabins.length) parts.push(`舱位 ${t.cabins.join('/')}`)
-        if (!parts.length) return <Typography.Text type="secondary">不限</Typography.Text>
-        return (
-          <Space size={4} wrap>
-            {parts.map((p, i) => <Tag key={i} color={i === 0 ? 'blue' : 'purple'}>{p}</Tag>)}
-          </Space>
-        )
-      },
-    },
-    {
-      title: '状态', key: 'status', width: 100,
-      render: (_, t) => (
-        t.enabled
-          ? <Tag color="green">监控中</Tag>
-          : <Tag>已停止</Tag>
-      ),
-    },
-    {
-      title: '操作', key: 'op', width: 190,
-      render: (_, t) => (
-        <Space size={4}>
-          <Button
-            size="small"
-            type={t.enabled ? 'default' : 'primary'}
-            icon={<PowerIcon />}
-            onClick={() => toggleEnabled(t, !t.enabled)}
-          >
-            {t.enabled ? '停止' : '启动'}
-          </Button>
-          <Tooltip title="编辑">
-            <Button size="small" type="text" icon={<EditIcon />} aria-label={`编辑 ${t.flight_no || '监控任务'}`} onClick={() => openEdit(t)} />
-          </Tooltip>
-          <Popconfirm
-            title={`删除监控 ${t.from_city} → ${t.to_city}`}
-            description="删除后 daemon 将不再查询，价格历史保留。不可撤销。"
-            okText="删除"
-            cancelText="取消"
-            okButtonProps={{ danger: true }}
-            onConfirm={() => doDelete(t)}
-          >
-            <Tooltip title="删除">
-              <Button size="small" type="text" danger icon={<DeleteIcon />} aria-label={`删除 ${t.flight_no || '监控任务'}`} />
-            </Tooltip>
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ]
+  const routeTitle = (row) => {
+    const lead = row.legs.find((leg) => !row.round || leg.leg === 'out') || row.legs[0]
+    const from = cityWithProvince(lead.from_city || lead.from_code)
+    const to = cityWithProvince(lead.to_city || lead.to_code)
+    return row.round ? `${from} ↔ ${to}` : `${from} → ${to}`
+  }
 
   return (
     <div>
       <Card
-        title={`监控设置 · 任务（${tasks.length}）`}
+        className="task-board"
+        title={`监控任务 · ${tasks.length} 班 · ${taskRows.length} 条航线`}
         extra={
           <Space>
             <Button type="primary" ghost icon={<CompassIcon />} onClick={() => onGo('flights')}>去航线查询添加</Button>
           </Space>
         }
       >
-        <Table
-          rowKey={(_, i) => i}
-          size="middle"
-          pagination={false}
-          dataSource={tasks}
-          columns={columns}
-          scroll={{ x: 'max-content' }}
-          locale={{
-            emptyText: (
-              <Empty description="还没有监控任务">
-                <Button type="primary" icon={<CompassIcon />} onClick={() => onGo('flights')}>
-                  去航线查询添加
-                </Button>
-              </Empty>
-            ),
-          }}
-        />
+        {taskRows.length === 0 ? (
+          <Empty description="还没有监控任务">
+            <Button type="primary" icon={<CompassIcon />} onClick={() => onGo('flights')}>
+              去航线查询添加
+            </Button>
+          </Empty>
+        ) : (
+          <div className="task-groups">
+            {taskRows.map((row) => (
+              <section key={row.key} className="task-group">
+                <header className="task-group-head">
+                  <b>{routeTitle(row)}</b>
+                  <Tag color={row.round ? 'green' : 'default'} style={{ marginInlineEnd: 0 }}>{row.round ? '往返' : '单程'}</Tag>
+                  <span>{row.legs.length} 班</span>
+                </header>
+                {monitorDateGroups(row.legs).map((group) => {
+                  const roundReq = row.round ? roundDetailRequest(group) : null
+                  const pairState = roundReq ? groupState(group) : 'on'
+                  const pairOn = pairState !== 'off'
+                  return (
+                  <div key={group.key}>
+                    <div className="task-date">
+                      <div className="task-date-label">
+                        <b>{group.label}</b>
+                        {group.stay ? <span>{group.stay}</span> : null}
+                        {roundReq ? (
+                          pairState === 'on' ? <Tag color="green" style={{ marginInlineEnd: 0 }}>往返监控中</Tag>
+                            : pairState === 'off' ? <Tag style={{ marginInlineEnd: 0 }}>往返已停止</Tag>
+                              : <Tag color="orange" style={{ marginInlineEnd: 0 }}>部分停止</Tag>
+                        ) : null}
+                      </div>
+                      {roundReq ? (
+                        <div className="task-flight-ops">
+                          <span className="task-ops-span">
+                            <span className="task-ops-ghost" aria-hidden>
+                              <Button size="small" tabIndex={-1}>查看详情</Button>
+                              <Button size="small" tabIndex={-1}>回程</Button>
+                            </span>
+                            <Button size="small" type="primary" ghost onClick={() => onOpenDetail && onOpenDetail(roundReq)}>往返详情</Button>
+                          </span>
+                          <Tooltip title={pairOn ? '停止监控这组往返（去程、回程一起），其他日期不受影响' : '重新监控这组往返（去程、回程一起）'}>
+                            <Button size="small" type={pairOn ? 'default' : 'primary'} icon={<PowerIcon />} onClick={() => toggleGroup(group, !pairOn)}>
+                              {pairOn ? '停止' : '启动'}
+                            </Button>
+                          </Tooltip>
+                          <Tooltip title="编辑这组往返（改日期、提醒条件）">
+                            <Button size="small" type="text" icon={<EditIcon />} aria-label={`编辑 ${group.label} 往返`} onClick={() => openPairEdit(group, roundReq)} />
+                          </Tooltip>
+                          <Popconfirm
+                            title={`删除 ${group.label} 这组往返`}
+                            description="去程、回程这几天一起删掉，其他日期继续留在列表里。"
+                            okText="删除"
+                            cancelText="取消"
+                            okButtonProps={{ danger: true }}
+                            onConfirm={() => deleteGroup(group)}
+                          >
+                            <Tooltip title="删除这组往返">
+                              <Button size="small" type="text" danger icon={<DeleteIcon />} aria-label={`删除 ${group.label} 往返`} />
+                            </Tooltip>
+                          </Popconfirm>
+                        </div>
+                      ) : null}
+                    </div>
+                    {group.legs.flatMap(({ task: t, dates: legDates }) => {
+                  const shownDates = legDates.length ? legDates : [null]
+                  return shownDates.map((day) => {
+                  const dates = day ? [day] : []
+                  const products = String(t.product || '').split('/').map((s) => s.trim()).filter(Boolean)
+                  const paused = new Set(t.disabled_dates || [])
+                  const rowOn = day ? !paused.has(day) : t.enabled !== false
+                  const seatBits = []
+                  if (Number(t.min_seats || 1) > 1) seatBits.push(`≥${t.min_seats}张`)
+                  if (t.cabins && t.cabins.length) seatBits.push(t.cabins.join('/'))
+                  return (
+                    <div key={`${group.key}-${legKey(t)}-${day || 'none'}`} className={`task-flight${rowOn ? '' : ' is-paused'}`}>
+                      <div className="task-flight-main">
+                        <div className="task-flight-line">
+                          {row.round ? <Tag color={t.leg === 'back' ? 'blue' : 'gold'} style={{ marginInlineEnd: 0 }}>{t.leg === 'back' ? '回程' : '去程'}</Tag> : null}
+                          <span className="mono task-flight-no">{t.flight_no || '—'}</span>
+                          <span className="mono task-flight-time">{t.dep_time || '--:--'} → {t.arr_time || '--:--'}</span>
+                          <Tooltip title={(t.dates || []).join('、') || '未选日期'}>
+                            <span className="task-flight-dates">{shortDates(dates)}</span>
+                          </Tooltip>
+                        </div>
+                        <div className="task-flight-meta">
+                          {products.map((p) => <Tag key={p} color={p === '666' ? 'gold' : 'purple'} style={{ marginInlineEnd: 0 }}>{p}</Tag>)}
+                          <span className="task-flight-price">¥199</span>
+                          {rowOn ? <Tag color="green" style={{ marginInlineEnd: 0 }}>监控中</Tag> : <Tag style={{ marginInlineEnd: 0 }}>已停止</Tag>}
+                          {(t.tiers || []).map((p) => <Tag key={p} style={{ marginInlineEnd: 0 }}>提醒 {p}</Tag>)}
+                          {seatBits.map((bit) => <Tag key={bit} color="blue" style={{ marginInlineEnd: 0 }}>{bit}</Tag>)}
+                          {stopTag(t)}
+                          {stopDetail(t) ? <span className="task-flight-dates">{stopDetail(t)}</span> : null}
+                        </div>
+                      </div>
+                      <div className="task-flight-ops">
+                        {day ? (isPhone() ? (
+                          <Button size="small" type="primary" ghost onClick={() => openHnaApp(t, day, msg)}>打开 App</Button>
+                        ) : (
+                          <Button size="small" type="link" className="task-jump" href={officialWebUrl(t, day, false)} target="_blank" rel="noreferrer">跳到官网</Button>
+                        )) : null}
+                        <Button
+                          size="small"
+                          disabled={!day}
+                          onClick={() => onOpenDetail && onOpenDetail(taskDetailRequest(t, day))}
+                        >
+                          查看详情
+                        </Button>
+                        <Tooltip title="找对向航班，按去程日期的次日一起监控">
+                          <Button size="small" onClick={() => openReturn(t)}>回程</Button>
+                        </Tooltip>
+                        <Button size="small" type={rowOn ? 'default' : 'primary'} icon={<PowerIcon />} onClick={() => toggleEnabled(t, !rowOn, dates)}>
+                          {rowOn ? '停止' : '启动'}
+                        </Button>
+                        <Tooltip title="编辑">
+                          <Button size="small" type="text" icon={<EditIcon />} aria-label={`编辑 ${t.flight_no || '监控任务'}`} onClick={() => openEdit(t)} />
+                        </Tooltip>
+                        <Popconfirm
+                          title={day ? `删除 ${monitorDayLabel(day)} 这一天` : `删除监控 ${t.from_city} → ${t.to_city}`}
+                          description={day && (t.dates || []).length > 1 ? '只删这一天，其他日期继续留在列表里。' : '删除后 daemon 将不再查询，价格历史保留。不可撤销。'}
+                          okText="删除"
+                          cancelText="取消"
+                          okButtonProps={{ danger: true }}
+                          onConfirm={() => doDelete(t, day)}
+                        >
+                          <Tooltip title="删除">
+                            <Button size="small" type="text" danger icon={<DeleteIcon />} aria-label={`删除 ${t.flight_no || '监控任务'}`} />
+                          </Tooltip>
+                        </Popconfirm>
+                      </div>
+                    </div>
+                  )
+                  })
+                    })}
+                  </div>
+                  )
+                })}
+              </section>
+            ))}
+          </div>
+        )}
       </Card>
+
+      <Modal
+        open={!!returnSource}
+        title={returnSource ? `同时监控回程：${cityWithProvince(shortCity(returnSource.to_city))} → ${cityWithProvince(shortCity(returnSource.from_city))}` : ''}
+        width={680}
+        okText="创建回程监控"
+        okButtonProps={{ loading: returnBusy, disabled: returnLoading }}
+        cancelText="取消"
+        onCancel={() => setReturnSource(null)}
+        onOk={confirmReturn}
+        destroyOnClose
+      >
+        {returnSource && (
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
+            去程 {returnSource.flight_no || ''} {cityWithProvince(shortCity(returnSource.from_city))} → {cityWithProvince(shortCity(returnSource.to_city))}
+            ，已选 {(returnSource.dates || []).map((d) => String(d).slice(5)).join('、') || '—'}。
+            回程按这些日期的第二天预选。第二天不飞的航班不会勾上，可以自己改日期。
+          </Typography.Paragraph>
+        )}
+        {returnLoading ? <Spin /> : (
+          <ReturnPickList
+            groups={returnGroups}
+            onToggle={(key, checked) => setReturnGroups((prev) => prev.map((x) => (x.key === key ? { ...x, checked, choicePinned: true } : x)))}
+            onDates={(key, v) => setReturnGroups((prev) => prev.map((x) => (x.key === key ? { ...x, selected: v, checked: v.length > 0, returnTouched: true, choicePinned: true } : x)))}
+          />
+        )}
+      </Modal>
 
       <Modal
         open={!!editRow}
@@ -696,13 +1103,13 @@ function Tasks({ data, onChanged, msg, onGo, tierBlockRules }) {
         <Form form={editForm} layout="vertical">
           <Row gutter={12}>
             <Col span={12}>
-              <Form.Item name="from_code" label="出发地（不可改）">
-                <Select {...citySelectProps} disabled />
+              <Form.Item label="出发地（不可改）">
+                <Input value={editRow ? cityWithProvince(shortCity(editRow.from_city || editRow.from_code)) : ''} disabled />
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item name="to_code" label="到达地（不可改）">
-                <Select {...citySelectProps} disabled />
+              <Form.Item label="到达地（不可改）">
+                <Input value={editRow ? cityWithProvince(shortCity(editRow.to_city || editRow.to_code)) : ''} disabled />
               </Form.Item>
             </Col>
           </Row>
@@ -728,15 +1135,8 @@ function Tasks({ data, onChanged, msg, onGo, tierBlockRules }) {
             label="监控日期"
             rules={[{ required: true, message: '至少保留一个监控日期' }]}
           >
-            <Select
-              mode="multiple"
-              showSearch
-              placeholder="选择要监控的日期"
-              optionFilterProp="label"
-              maxTagCount="responsive"
-              loading={dateLoading}
-              options={dateOptions}
-            />
+            <DatePickCalendar dates={dateOptions.map((o) => o.value)} />
+            {dateLoading ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>正在读取可飞日期…</Typography.Text> : null}
           </Form.Item>
           <Row gutter={12}>
             <Col span={8}>
@@ -779,18 +1179,100 @@ function Tasks({ data, onChanged, msg, onGo, tierBlockRules }) {
           )}
         </Form>
       </Modal>
+
+      <Modal
+        open={!!pairEdit}
+        title={pairEdit ? `编辑往返：${cityWithProvince(shortCity(pairEdit.req.from))} ↔ ${cityWithProvince(shortCity(pairEdit.req.to))}` : ''}
+        width={860}
+        okText="保存"
+        okButtonProps={{ loading: pairBusy }}
+        cancelText="取消"
+        onCancel={() => setPairEdit(null)}
+        onOk={savePairEdit}
+      >
+        {pairEdit ? (
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
+            原来是 {monitorDayLabel(pairEdit.req.outDate)} 去（{pairEdit.req.outFlight}）、{monitorDayLabel(pairEdit.req.backDate)} 回（{pairEdit.req.backFlight}）。
+            改日期只换这一组，其他日期不动；提醒条件对去程、回程两条任务都生效。
+          </Typography.Paragraph>
+        ) : null}
+        <Form form={pairForm} layout="vertical">
+          <Row gutter={12}>
+            <Col span={12}>
+              <Form.Item name="outDate" label={`去程日期${pairEdit ? ` · ${pairEdit.req.outFlight}` : ''}`} rules={[{ required: true, message: '请选择去程日期' }]}>
+                <DatePickCalendar
+                  single
+                  dates={[...new Set([...(pairEdit ? [pairEdit.req.outDate] : []), ...pairOpts.out])].filter(Boolean).sort()}
+                />
+              </Form.Item>
+              {pairOpts.loading ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>正在读取可飞日期…</Typography.Text> : null}
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                name="backDate"
+                label={`回程日期${pairEdit ? ` · ${pairEdit.req.backFlight}` : ''}`}
+                dependencies={['outDate']}
+                rules={[
+                  { required: true, message: '请选择回程日期' },
+                  ({ getFieldValue }) => ({
+                    validator: (_, value) => (!value || value > getFieldValue('outDate') ? Promise.resolve() : Promise.reject(new Error('回程要晚于去程'))),
+                  }),
+                ]}
+              >
+                <DatePickCalendar
+                  single
+                  after={pairOutDate}
+                  dates={[...new Set([...(pairEdit ? [pairEdit.req.backDate] : []), ...pairOpts.back])].filter(Boolean).sort()}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={12}>
+            <Col span={8}>
+              <Form.Item name="tiers" label="档位条件（空=不限）">
+                <Select mode="multiple" placeholder="不限" options={TIER_OPTIONS} maxTagCount="responsive" />
+              </Form.Item>
+            </Col>
+            <Col span={7}>
+              <Form.Item name="min_seats" label="余票条件">
+                <Select
+                  options={[
+                    { label: '不限（有票即提醒）', value: 1 },
+                    { label: '至少 2 张', value: 2 },
+                    { label: '至少 3 张', value: 3 },
+                    { label: '至少 4 张', value: 4 },
+                    { label: '至少 5 张', value: 5 },
+                  ]}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={9}>
+              <Form.Item name="cabins" label="舱位白名单（空=不限）">
+                <Select
+                  mode="tags"
+                  placeholder="如 B、C、Z、R…"
+                  options={CABIN_OPTIONS.map((c) => ({ value: c, label: c }))}
+                  tokenSeparators={[',', '，']}
+                  maxTagCount="responsive"
+                />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Form>
+      </Modal>
     </div>
   )
 }
 
 /* ================= 监控管理（票据 + 时段 + 高级设置） ================= */
-function detectFareType(raw, fallback = 'plus') {
-  // 从 cURL 的请求路径识别档位：ffl/airCtLowFareSearch → PLUS；airLowFareSearch → 普通
+function detectFareType(raw) {
+  // PLUS 只认 ffl/airLowFareSearch。airCtLowFareSearch 不是 PLUS，不能改地址复用。
   const m = String(raw || '').match(/https?:\/\/[^\s'"]+/i)
   const path = m ? m[0] : ''
-  if (path.includes('ffl') || path.includes('airCtLowFareSearch')) return 'plus'
+  if (path.includes('airCtLowFareSearch')) return 'invalid'
+  if (path.includes('ffl')) return 'plus'
   if (path.includes('airLowFareSearch')) return 'normal'
-  return fallback
+  return ''
 }
 
 function TicketSetup({ cfg, onChanged, msg }) {
@@ -799,10 +1281,10 @@ function TicketSetup({ cfg, onChanged, msg }) {
   const hasPlus = !!plus.configured
   const hasNormal = !!normal.configured
   const any = hasPlus || hasNormal
-  // 主档：优先 PLUS，其次普通；另一档运行时会自动派生
+  // 主档优先展示 PLUS。只有 PLUS 票据时，普通票可以借用；普通票不能反过来派生 PLUS。
   const primary = hasPlus ? 'plus' : hasNormal ? 'normal' : null
   const primaryTicket = primary === 'plus' ? plus : primary === 'normal' ? normal : null
-  const derivedType = primary === 'plus' ? (hasNormal ? '' : 'normal') : primary === 'normal' ? (hasPlus ? '' : 'plus') : ''
+  const derivedType = primary === 'plus' && !hasNormal ? 'normal' : ''
 
   const [editing, setEditing] = useState(!any)
   const [raw, setRaw] = useState('')
@@ -823,17 +1305,23 @@ function TicketSetup({ cfg, onChanged, msg }) {
     return () => clearInterval(iv)
   }, [revealed])
 
-  const detected = detectFareType(raw, primary || 'plus')
-  const detectedLabel = detected === 'plus' ? 'PLUS 专享' : '普通票价'
+  const detected = detectFareType(raw)
+  const detectedLabel = detected === 'plus' ? 'PLUS 专享' : detected === 'normal' ? '普通票价' : detected === 'invalid' ? '不可用' : '未识别'
 
   const save = async () => {
     setError('')
     if (!raw.trim()) { setError('内容为空，未保存。'); return }
+    if (detected === 'invalid') {
+      setError('这是 airCtLowFareSearch，不能当作 PLUS。请在 PLUS 专享入口抓取 ffl/airLowFareSearch。')
+      return
+    }
+    if (!detected) { setError('没有识别到 airLowFareSearch 请求，未保存。'); return }
     setBusy(true)
     try {
       const r = await api.saveTicket(detected, raw)
       if (!r.ok) { setError(r.error || '保存失败'); return }
-      msg.success(`票据已识别为「${detectedLabel}」并保存，另一档自动派生，daemon 下一轮自动生效`)
+      const extra = detected === 'plus' ? '普通票可借用这份登录态。' : 'PLUS 仍需单独抓取 ffl/airLowFareSearch。'
+      msg.success(`票据已识别为「${detectedLabel}」并保存。${extra}daemon 下一轮自动生效`)
       setRaw('')
       setEditing(false)
       onChanged()
@@ -906,7 +1394,7 @@ function TicketSetup({ cfg, onChanged, msg }) {
           style={{ marginTop: 8 }}
           type="info"
           showIcon
-          message={`未单独抓包${derivedType === 'plus' ? 'PLUS 专享' : '普通票价'}票据：运行时自动从当前票据派生（共用凭证，自动改写端点与档位标记）。`}
+          message="未单独抓包普通票价票据：运行时会借用 PLUS 票据，并改回普通票端点。"
         />
       )}
       {!derivedType && hasPlus && hasNormal && (
@@ -924,12 +1412,12 @@ function TicketSetup({ cfg, onChanged, msg }) {
         <div>
           <div className="muted" style={{ marginBottom: 6 }}>
             粘贴后自动识别档位，当前识别为
-            <Tag color={detected === 'plus' ? 'blue' : 'default'} style={{ marginInline: '0 4px' }}>{detectedLabel}</Tag>
-            （另一档自动派生，抓一份即可）
+            <Tag color={detected === 'plus' ? 'blue' : detected === 'invalid' ? 'red' : 'default'} style={{ marginInline: '0 4px' }}>{detectedLabel}</Tag>
+            （PLUS 与普通票需要各自的请求）
           </div>
           <Input.TextArea
             rows={6}
-            placeholder="粘贴完整 cURL（含 Cookie、token、hnairSign），PLUS 端点 ffl/airLowFareSearch 或普通端点 airLowFareSearch 均可…"
+            placeholder="粘贴完整 cURL（含 Cookie、token、hnairSign）。PLUS 用 ffl/airLowFareSearch，普通票用 airLowFareSearch。"
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
           />
@@ -949,7 +1437,7 @@ function TicketSetup({ cfg, onChanged, msg }) {
         style={{ marginTop: 12 }}
         items={[{
           key: 'howto',
-          label: '如何获取票据（抓一份即可，自动识别档位）',
+          label: '如何获取票据（PLUS 和普通票要各抓一份）',
           children: (
             <div>
               <Typography.Paragraph style={{ marginBottom: 8 }}>
@@ -961,13 +1449,15 @@ function TicketSetup({ cfg, onChanged, msg }) {
                 <Typography.Text strong>两种端点：</Typography.Text>
                 PLUS 专享请求名
                 <Typography.Text code>ffl/airLowFareSearch</Typography.Text>
-                （抓到的 <Typography.Text code>airCtLowFareSearch</Typography.Text> 也会自动改写为 PLUS 端点）；
-                普通票价请求名 <Typography.Text code>airLowFareSearch</Typography.Text>（不带 ffl 前缀）。
+                ，URL 里要有 token。
+                <Typography.Text code>airCtLowFareSearch</Typography.Text>
+                不是 PLUS，不能改地址后复用。
+                普通票价请求名是不带 ffl 的 <Typography.Text code>airLowFareSearch</Typography.Text>。
               </Typography.Paragraph>
               <Typography.Paragraph style={{ marginBottom: 0 }}>
                 <Typography.Text type="secondary">
-                  两档共用同一套 cookie/token/签名：只抓一份后，另一档运行时会自动借用并改写端点与档位标记（状态显示「自动派生」），无需重复抓包。
-                  若提示无法识别，请改用 Copy as cURL (cmd) 格式重试；已配置后保存即生效（daemon 下一轮自动读取，无需重启）。
+                  两档签名不能互换。只有 PLUS 票据时，普通票可以借用并改回普通端点；只有普通票时，PLUS 不会自动派生。
+                  已配置后保存即生效，daemon 下一轮自动读取，无需重启。
                 </Typography.Text>
               </Typography.Paragraph>
             </div>
@@ -1533,6 +2023,25 @@ function Notifications({ data, onChanged, msg }) {
         { title: '保存并发送测试', description: '保存后点「发送测试消息」，手机收到即成功' },
       ],
     },
+    wechat_bot: {
+      title: '企业微信机器人配置步骤',
+      steps: [
+        { title: '这是个人提醒', description: '消息发到接收人的单聊，不发群' },
+        { title: '填写机器人 ID 和 Secret', description: '机器人 ID 是 Bot ID。Secret 是调用密钥，和 WECOM_BOT_SECRET 是同一个' },
+        { title: '填写接收人', description: '填自己的英文名，例如 kaijundeng' },
+        { title: '先跟机器人说过话', description: '接收人需要先在单聊里给机器人发过消息，它才能主动推送' },
+        { title: '保存并发送测试', description: '保存后打开开关，点「发送测试消息」。单聊收到即成功' },
+      ],
+    },
+    email: {
+      title: '邮件提醒配置步骤',
+      steps: [
+        { title: '打开邮箱 SMTP', description: '在邮箱设置里开启 SMTP，并生成授权码。填授权码，不要填登录密码' },
+        { title: '填写服务器', description: 'QQ 邮箱 smtp.qq.com 端口 465；163 邮箱 smtp.163.com 端口 465' },
+        { title: '填写收发地址', description: '登录账号可以只填邮箱名。发件人填完整邮箱。收件人可填多个，用逗号分开' },
+        { title: '保存并发送测试', description: '保存后点「发送测试消息」，收件箱收到即成功' },
+      ],
+    },
   }
 
   const channelCards = [
@@ -1583,6 +2092,29 @@ function Notifications({ data, onChanged, msg }) {
           )}
         </>
       ),
+    },
+    {
+      name: 'wechat_bot', title: '企业微信机器人', color: '#1aad19',
+      view: nch.wechat_bot || {}, guide: guides.wechat_bot,
+      configured: !!(nch.wechat_bot?.bot_id && nch.wechat_bot?.secret && nch.wechat_bot?.chat_id),
+      fields: [
+        { key: 'bot_id', label: '机器人 ID', placeholder: '智能机器人的 Bot ID', keepEmpty: true, secret: true },
+        { key: 'secret', label: 'Secret', placeholder: '调用密钥，留空不修改', keepEmpty: true, secret: true },
+        { key: 'chat_id', label: '接收人', placeholder: '个人英文名，例如 kaijundeng。只发单聊' },
+      ],
+    },
+    {
+      name: 'email', title: '邮件', color: '#d48806',
+      view: nch.email || {}, guide: guides.email,
+      configured: !!(nch.email?.host && nch.email?.password && nch.email?.receiver && (nch.email?.sender || nch.email?.username)),
+      fields: [
+        { key: 'host', label: 'SMTP 服务器', placeholder: '如 smtp.qq.com' },
+        { key: 'port', label: '端口', placeholder: '465' },
+        { key: 'username', label: '登录账号', placeholder: 'SMTP 登录名，如 kedreamix' },
+        { key: 'password', label: '授权码', keepEmpty: true, secret: true },
+        { key: 'sender', label: '发件人', placeholder: '完整邮箱，如 name@qq.com' },
+        { key: 'receiver', label: '收件人', placeholder: '多个地址用逗号分开' },
+      ],
     },
     {
       name: 'feishu', title: '飞书', color: '#3370ff',
@@ -1714,7 +2246,7 @@ function Notifications({ data, onChanged, msg }) {
 
   return (
     <div>
-      {/* 通知渠道：六张卡片统一样式，标题旁「?」为配置教学 */}
+      {/* 通知渠道：卡片统一样式，标题旁「?」为配置教学 */}
       <Card
         style={{ marginBottom: 16 }}
         title={<Space><NotifyIcon style={{ color: 'var(--color-primary)' }} />通知渠道</Space>}
@@ -1805,9 +2337,168 @@ function fmtDays(days = []) {
   return days.join(',')
 }
 
+function weekDaysText(days = []) {
+  const list = [...new Set(days || [])].sort((a, b) => a - b)
+  if (!list.length) return '—'
+  if (list.length === 7) return '每天'
+  return `周${list.map((d) => '一二三四五六日'[d - 1]).join('')}`
+}
+
+function shortDateText(text = '') {
+  return String(text).replace(/(\d{2})-(\d{2})/g, (_, m, d) => `${Number(m)}/${Number(d)}`).replace(/~/g, '–')
+}
+
 function fmtDateRanges(ranges = []) {
   if (!ranges || !ranges.length) return '—'
   return mergeRanges(ranges).map(([a, b]) => (a === b ? a.slice(5) : `${a.slice(5)}~${b.slice(5)}`)).join('、')
+}
+
+function flightGroupKey(rec) {
+  return `${rec.flight_no || ''}|${rec.origin?.iata || ''}|${rec.dest?.iata || ''}`
+}
+
+function segmentKey(rec) {
+  const dates = (rec.effective_dates || []).map((pair) => pair.join('~')).join(',')
+  return `${flightGroupKey(rec)}|${rec.dep_time || ''}|${(rec.days || []).join('')}|${dates}`
+}
+
+function groupFlightRecords(records) {
+  const groups = []
+  const map = new Map()
+  for (const rec of records || []) {
+    const key = flightGroupKey(rec)
+    let group = map.get(key)
+    if (!group) {
+      group = {
+        key,
+        flight_no: rec.flight_no,
+        carrier: rec.carrier,
+        origin: rec.origin,
+        dest: rec.dest,
+        leg: rec.leg || '',
+        segments: [],
+      }
+      map.set(key, group)
+      groups.push(group)
+    }
+    group.segments.push(rec)
+  }
+  return groups
+}
+
+function operatedDay(rec, prefer) {
+  const days = new Set(rec.days || [])
+  const ranges = rec.effective_dates || []
+  const matches = (value) => {
+    if (!value || !value.isValid()) return ''
+    const ds = value.format('YYYY-MM-DD')
+    const wd = value.day() === 0 ? 7 : value.day()
+    const inRange = ranges.some(([a, b]) => ds >= a && ds <= b)
+    if (inRange && (!days.size || days.has(wd)) && ds >= dayjs().format('YYYY-MM-DD')) return ds
+    return ''
+  }
+  const preferred = matches(prefer)
+  if (preferred) return preferred
+  const todayHit = matches(dayjs())
+  if (todayHit) return todayHit
+  let cursor = dayjs()
+  const limit = cursor.add(370, 'day')
+  while (cursor.isBefore(limit)) {
+    const hit = matches(cursor)
+    if (hit) return hit
+    cursor = cursor.add(1, 'day')
+  }
+  return (ranges[0] && ranges[0][0]) || dayjs().format('YYYY-MM-DD')
+}
+
+function seasonLabel(seg) {
+  const season = String(seg?.season || '')
+  const source = String(seg?.source || '')
+  if (season.includes('冬春') || source.includes('winter')) return '冬春航班'
+  return '夏秋航班'
+}
+
+function scheduleBlocks(segments) {
+  const groups = []
+  const map = new Map()
+  for (const seg of segments || []) {
+    const key = seg.dep_time || ''
+    let block = map.get(key)
+    if (!block) {
+      block = { segments: [], days: new Set(), ranges: [], product: new Set(), seasons: new Set(), arr: '' }
+      map.set(key, block)
+      groups.push(block)
+    }
+    block.segments.push(seg)
+    if (!block.arr && seg.arr_time) block.arr = seg.arr_time
+    block.seasons.add(seasonLabel(seg))
+    for (const day of seg.days || []) block.days.add(day)
+    for (const pair of seg.effective_dates || []) block.ranges.push(pair)
+    for (const part of String(seg.product || '').split('/')) if (part) block.product.add(part)
+  }
+  return groups.map((block) => {
+    const ranges = [...block.ranges].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    let start = ranges[0] ? ranges[0][0] : ''
+    let end = ranges[0] ? ranges[0][1] : ''
+    let continuous = true
+    for (const [a, b] of ranges) {
+      if (start && a > end && dayjs(a).diff(dayjs(end), 'day') > 1) continuous = false
+      if (!start || a < start) start = a
+      if (b > end) end = b
+    }
+    const days = [...block.days].sort((a, b) => a - b)
+    const base = block.segments[0]
+    const record = {
+      ...base,
+      dep_time: base.dep_time || '',
+      arr_time: block.arr || base.arr_time || '',
+      days,
+      effective_dates: start ? [[start, end]] : base.effective_dates,
+      product: [...block.product].join('/'),
+    }
+    const dateText = !start ? '—' : (continuous ? `${start.slice(5)}~${end.slice(5)}` : fmtDateRanges(ranges))
+    return { record, segments: block.segments, days, dateText, product: [...block.product], seasons: [...block.seasons] }
+  })
+}
+
+function isPhone() {
+  return /Android|iPhone|iPad|iPod|OpenHarmony/i.test(navigator.userAgent || '')
+}
+
+function officialWebUrl(rec, day, mobile) {
+  const from = rec.origin?.iata || rec.from_code || ''
+  const to = rec.dest?.iata || rec.to_code || ''
+  if (mobile) {
+    const params = new URLSearchParams({ depCode: from, dstCode: to, startTime: day, tripType: '1' })
+    return `https://m.hnair.com/?${params}#/book/checkTiket`
+  }
+  const params = new URLSearchParams({
+    orgCity: from,
+    dstCity: to,
+    takeoffDate: day,
+    flightNo: rec.flight_no || '',
+  })
+  return `https://new.hnair.com/hainanair/ibe/common/flightSearch.do?${params}`
+}
+
+function openHnaApp(rec, day, msg) {
+  const from = rec.origin?.iata || rec.from_code || ''
+  const to = rec.dest?.iata || rec.to_code || ''
+  const url = `hna2app://app.hnar.com?url=searchIndex&params={depCode:${from},dstCode:${to},startTime:${day},tripType:1}`
+  const ios = /iPhone|iPad|iPod/i.test(navigator.userAgent || '')
+  const store = ios
+    ? 'https://apps.apple.com/cn/app/id465617429'
+    : 'https://app.hnair.com/mapp/download/phone_package_download.jsp?stages=standard'
+  const start = Date.now()
+  const timer = window.setTimeout(() => {
+    if (document.hidden || Date.now() - start > 2500) return
+    msg.info(ios ? '没有打开海航 App，正在前往 App Store' : '没有打开海航 App，正在前往下载页')
+    window.location.href = store
+  }, 1600)
+  const cancel = () => window.clearTimeout(timer)
+  window.addEventListener('pagehide', cancel, { once: true })
+  document.addEventListener('visibilitychange', () => { if (document.hidden) cancel() }, { once: true })
+  window.location.href = url
 }
 
 function cityNameOf(label) {
@@ -1943,8 +2634,1867 @@ function ScheduleCalendar({ rec }) {
   )
 }
 
-function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
+function weekendBounds(index, today = dayjs()) {
+  const day = today.day()
+  const sat = day === 6
+    ? today.startOf('day')
+    : day === 0
+      ? today.startOf('day').subtract(1, 'day')
+      : today.startOf('day').add(6 - day, 'day')
+  const start = sat.add(index * 7, 'day')
+  return [start, endOfWeekend(start)]
+}
+
+function endOfWeekend(start) {
+  return start.add(1, 'day')
+}
+
+const WEEKEND_LIST_FROM = 1
+const WEEKEND_RECOMMEND_FROM = 2
+
+function weekendSpanLabel(start, end, index) {
+  const a = start.format('M/D')
+  const b = end.format('M/D')
+  const span = start.isSame(end, 'day') ? a : `${a}–${b}`
+  if (index === WEEKEND_LIST_FROM) return `下周末 ${span}`
+  if (index === WEEKEND_RECOMMEND_FROM) return `下下周末 ${span}`
+  return span
+}
+
+function upcomingWeekendOptions(count = 4, today = dayjs()) {
+  const todayStr = today.format('YYYY-MM-DD')
+  const options = []
+  for (let i = WEEKEND_LIST_FROM; options.length < count && i < WEEKEND_LIST_FROM + count + 2; i++) {
+    const [sat, sun] = weekendBounds(i, today)
+    if (sun.format('YYYY-MM-DD') < todayStr) continue
+    const start = sat.format('YYYY-MM-DD') < todayStr ? today.startOf('day') : sat
+    options.push({
+      key: start.format('YYYY-MM-DD'),
+      index: i,
+      start,
+      end: sun,
+      label: weekendSpanLabel(start, sun, i),
+    })
+  }
+  return options
+}
+
+function weekendPicksForDates(dates, count = 4, today = dayjs()) {
+  const allowed = new Set(dates)
+  const todayStr = today.format('YYYY-MM-DD')
+  const picks = []
+  for (let i = WEEKEND_LIST_FROM; picks.length < count && i < WEEKEND_LIST_FROM + 16; i++) {
+    const [sat, sun] = weekendBounds(i, today)
+    const days = [sat, sun].map((d) => d.format('YYYY-MM-DD')).filter((ds) => ds >= todayStr && allowed.has(ds))
+    if (!days.length) continue
+    const start = dayjs(days[0])
+    const end = dayjs(days[days.length - 1])
+    picks.push({
+      key: days[0],
+      days,
+      label: weekendSpanLabel(start, end, i),
+    })
+  }
+  return picks
+}
+
+const WEEKEND_LEAVES = [
+  { key: 'none', label: '免请假' },
+  { key: 'half', label: '请半天' },
+  { key: 'day', label: '请一天' },
+  { key: 'custom', label: '自选日期' },
+]
+
+const ORIGIN_GROUPS = [
+  { name: '海南', emoji: '🌴', cities: ['海口', '三亚', '琼海'] },
+  { name: '川渝', emoji: '🐼', cities: ['成都', '重庆'] },
+  { name: '广深', emoji: '🏙️', cities: ['广州', '深圳', '珠海'] },
+  { name: '江浙沪', emoji: '🌊', cities: ['上海', '杭州', '南京', '宁波'] },
+  { name: '云南', emoji: '🌿', cities: ['昆明', '丽江', '西双版纳', '大理'] },
+  { name: '东北', emoji: '❄️', cities: ['哈尔滨', '长春', '沈阳', '大连'] },
+  { name: '福建', emoji: '🍵', cities: ['福州', '厦门', '泉州'] },
+]
+
+const HOT_ORIGIN_CITIES = ['海口', '三亚', '北京', '上海', '广州', '深圳', '成都', '杭州']
+const ORIGIN_RECENT_KEY = 'hna-weekend-origin-recent'
+
+const WEEKEND_ORIGIN_LIMIT = 5
+
+function addOriginLabels(current, labels) {
+  const next = [...(current || [])]
+  for (const label of labels) {
+    if (!label || next.includes(label)) continue
+    if (next.length >= WEEKEND_ORIGIN_LIMIT) break
+    next.push(label)
+  }
+  return next
+}
+
+function groupOriginLabels(options, cities) {
+  return cities
+    .map((name) => (options || []).find((label) => cityNameOf(label) === name))
+    .filter(Boolean)
+}
+
+function loadOriginRecent() {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(ORIGIN_RECENT_KEY) || '[]')
+    return Array.isArray(raw) ? raw.filter(Boolean).slice(0, 8) : []
+  } catch (e) {
+    return []
+  }
+}
+
+function writeOriginRecent(list) {
+  const next = []
+  for (const label of list || []) {
+    const city = cityNameOf(label)
+    if (!city || next.some((item) => cityNameOf(item) === city)) continue
+    next.push(label)
+    if (next.length >= 8) break
+  }
+  try { window.localStorage.setItem(ORIGIN_RECENT_KEY, JSON.stringify(next)) } catch (e) { /* ignore */ }
+  return next
+}
+
+function matchOriginLabel(options, stored) {
+  if (!stored) return ''
+  if ((options || []).includes(stored)) return stored
+  return (options || []).find((label) => cityNameOf(label) === cityNameOf(stored)) || ''
+}
+
+function toggleOriginLabel(current, label) {
+  if (!label) return current || []
+  if ((current || []).includes(label)) return current.filter((item) => item !== label)
+  return addOriginLabels(current, [label])
+}
+
+function OriginChip({ label, on, disabled, onClick }) {
+  return (
+    <button type="button" className={`origin-chip${on ? ' is-on' : ''}`} disabled={!on && disabled} onClick={onClick}>
+      <span>{cityNameOf(label)}</span>
+      {on ? <span className="origin-chip-check">✓</span> : null}
+    </button>
+  )
+}
+
+function OriginField({ value, onOpen, onChange }) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      className={`origin-field${value.length ? '' : ' is-empty'}`}
+      onClick={onOpen}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() } }}
+    >
+      <span className="origin-field-tags">
+        {value.length ? value.map((label) => (
+          <span key={label} className="origin-field-tag">
+            {cityNameOf(label)}
+            <button
+              type="button"
+              aria-label={`移除${cityNameOf(label)}`}
+              onClick={(e) => { e.stopPropagation(); onChange(value.filter((item) => item !== label)) }}
+            >×</button>
+          </span>
+        )) : <span className="origin-field-placeholder">选择出发地，如 海口 / 深圳</span>}
+      </span>
+      <span className="origin-field-meta">{value.length}/{WEEKEND_ORIGIN_LIMIT}</span>
+    </div>
+  )
+}
+
+function DateStrip({ mode, date, onPick, days = 30 }) {
+  const ref = useRef(null)
+  const start = dayjs().startOf('day')
+  const list = Array.from({ length: days }, (_, i) => start.add(i, 'day'))
+  const picked = mode === 'single' && date ? date.format('YYYY-MM-DD') : ''
+  useEffect(() => {
+    const box = ref.current
+    const node = box?.querySelector('.date-strip-day.is-on')
+    if (box && node) box.scrollTo({ left: node.offsetLeft - box.clientWidth / 2 + node.clientWidth / 2, behavior: 'smooth' })
+  }, [picked])
+  return (
+    <div className="date-strip" ref={ref}>
+      <button type="button" className={`date-strip-day is-any${mode === 'none' ? ' is-on' : ''}`} onClick={() => onPick('none')}>
+        <span className="date-strip-week">日期</span>
+        <span className="date-strip-num">不限</span>
+        <span className="date-strip-md">看全部班期</span>
+      </button>
+      {list.map((d) => {
+        const key = d.format('YYYY-MM-DD')
+        const dow = d.day()
+        const tone = dow === 0 || dow === 6 ? ' is-weekend' : dow === 5 ? ' is-fri' : ''
+        const week = d.isSame(start, 'day') ? '今天' : d.isSame(start.add(1, 'day'), 'day') ? '明天' : dow === 0 || dow === 6 ? '周末' : cnWeekday(key)
+        return (
+          <button type="button" key={key} className={`date-strip-day${tone}${picked === key ? ' is-on' : ''}`} onClick={() => onPick('single', d)}>
+            <span className="date-strip-week">{week}</span>
+            <span className="date-strip-num">{d.date()}</span>
+            <span className="date-strip-md">{d.format('M/D')}</span>
+          </button>
+        )
+      })}
+      <button type="button" className={`date-strip-day is-any${mode === 'range' ? ' is-on' : ''}`} onClick={() => onPick('range')}>
+        <span className="date-strip-week">按区间</span>
+        <span className="date-strip-num">区间</span>
+        <span className="date-strip-md">选一段日期</span>
+      </button>
+    </div>
+  )
+}
+
+const fieldLabel = (title, hint) => (
+  <span className="field-label">{title}{hint ? <span>{hint}</span> : null}</span>
+)
+
+function OriginPickerModal({ open, options, value, recent, onCancel, onConfirm, onClearRecent }) {
+  const [draft, setDraft] = useState(value || [])
+  const [query, setQuery] = useState('')
+  useEffect(() => {
+    if (!open) return
+    setDraft(value || [])
+    setQuery('')
+  }, [open, value])
+
+  const full = draft.length >= WEEKEND_ORIGIN_LIMIT
+  const q = query.trim().toUpperCase()
+  const searched = q
+    ? (options || []).filter((label) => String(label).toUpperCase().includes(q)).slice(0, 24)
+    : []
+  const hot = groupOriginLabels(options, HOT_ORIGIN_CITIES)
+  const recentLabels = []
+  for (const stored of recent || []) {
+    const label = matchOriginLabel(options, stored)
+    if (label && !recentLabels.includes(label)) recentLabels.push(label)
+  }
+
+  const toggleGroup = (labels) => {
+    const selected = labels.filter((label) => draft.includes(label)).length
+    setDraft(selected === labels.length
+      ? draft.filter((label) => !labels.includes(label))
+      : addOriginLabels(draft, labels))
+  }
+
+  return (
+    <Modal
+      open={open}
+      onCancel={onCancel}
+      footer={null}
+      width={560}
+      title={(
+        <div className="origin-modal-title">
+          <b>选择出发地</b>
+          <span>多选 · 最多 {WEEKEND_ORIGIN_LIMIT} 个</span>
+        </div>
+      )}
+    >
+      <Input
+        allowClear
+        value={query}
+        placeholder="输入城市名或机场名，如 海口 / 深圳"
+        onChange={(event) => setQuery(event.target.value)}
+      />
+      <div className="origin-section-title">快捷城市群 <span>一键选入区域热门航点</span></div>
+      <div className="origin-groups">
+        {ORIGIN_GROUPS.map((group) => {
+          const labels = groupOriginLabels(options, group.cities)
+          if (!labels.length) return null
+          const selected = labels.filter((label) => draft.includes(label)).length
+          return (
+            <button
+              key={group.name}
+              type="button"
+              className={`origin-group${selected === labels.length ? ' is-on' : ''}`}
+              disabled={selected === 0 && full}
+              onClick={() => toggleGroup(labels)}
+            >
+              <span className="origin-group-ico">{group.emoji}</span>
+              <span>{group.name}</span>
+              <span className="origin-group-count">（{labels.length}城）</span>
+            </button>
+          )
+        })}
+      </div>
+      {recentLabels.length > 0 && !q && (
+        <>
+          <div className="origin-section-title">
+            最近搜索
+            <button type="button" className="origin-clear" onClick={onClearRecent}>清空</button>
+          </div>
+          <div className="origin-chips">
+            {recentLabels.map((label) => (
+              <OriginChip
+                key={label}
+                label={label}
+                on={draft.includes(label)}
+                disabled={full}
+                onClick={() => setDraft((prev) => toggleOriginLabel(prev, label))}
+              />
+            ))}
+          </div>
+        </>
+      )}
+      <div className="origin-section-title">{q ? '搜索结果' : '热门城市'}</div>
+      {(q ? searched : hot).length === 0 ? (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={q ? '没有匹配的城市' : '当前没有可选城市'} />
+      ) : (
+        <div className="origin-chips">
+          {(q ? searched : hot).map((label) => (
+            <OriginChip
+              key={label}
+              label={label}
+              on={draft.includes(label)}
+              disabled={full}
+              onClick={() => setDraft((prev) => toggleOriginLabel(prev, label))}
+            />
+          ))}
+        </div>
+      )}
+      <div className="origin-foot">
+        <div className="origin-picked">
+          <span>已选 {draft.length}/{WEEKEND_ORIGIN_LIMIT}</span>
+          {draft.map((label) => (
+            <button
+              key={label}
+              type="button"
+              className="origin-picked-tag"
+              onClick={() => setDraft((prev) => prev.filter((item) => item !== label))}
+            >
+              {cityNameOf(label)} ×
+            </button>
+          ))}
+          {draft.length > 0 && (
+            <button type="button" className="origin-clear" onClick={() => setDraft([])}>清空</button>
+          )}
+        </div>
+        <Button type="primary" block onClick={() => onConfirm(draft)}>
+          确认选择（已选 {draft.length}/{WEEKEND_ORIGIN_LIMIT}）
+        </Button>
+      </div>
+    </Modal>
+  )
+}
+
+const WEEK_DAY_NAME = { thu: '周四', fri: '周五', sat: '周六', sun: '周日', mon: '周一' }
+
+const PATTERN_ICONS = {
+  moon: MoonIcon,
+  sunrise: SunriseIcon,
+  sun: SunIcon,
+  sunset: SunsetIcon,
+  luggage: LuggageIcon,
+}
+
+const WEEKEND_PATTERNS = [
+  {
+    key: 'fri',
+    leave: 'none',
+    title: '周五晚去 · 周日晚回',
+    note: '纯周末 · 17:30 后下班飞',
+    badge: '48h',
+    icon: 'moon',
+    outDay: 'fri',
+    outCmp: 'gte',
+    outBound: '17:30',
+    backDay: 'sun',
+    backCmp: 'gte',
+    backBound: '17:30',
+  },
+  {
+    key: 'sat',
+    leave: 'none',
+    title: '周六早去 · 周日晚回',
+    note: '晨光挑战 · 09:30 前起飞',
+    badge: '35h',
+    icon: 'sunrise',
+    outDay: 'sat',
+    outCmp: 'lte',
+    outBound: '09:30',
+    backDay: 'sun',
+    backCmp: 'gte',
+    backBound: '17:30',
+  },
+  {
+    key: 'half-afternoon',
+    leave: 'half',
+    title: '周五下午去 · 周日晚回',
+    note: '请半天 · 12:00 后出发，晚上返程',
+    badge: '60h',
+    icon: 'sun',
+    outDay: 'fri',
+    outCmp: 'between',
+    outBound: '12:00',
+    outBoundEnd: '17:30',
+    backDay: 'sun',
+    backCmp: 'gte',
+    backBound: '17:30',
+  },
+  {
+    key: 'half-mon',
+    leave: 'half',
+    title: '周五晚去 · 周一早回',
+    note: '请半天 · 周一 09:30 前抵家',
+    badge: '60h',
+    icon: 'sunrise',
+    outDay: 'fri',
+    outCmp: 'gte',
+    outBound: '17:30',
+    backDay: 'mon',
+    backCmp: 'lte',
+    backBound: '09:30',
+  },
+  {
+    key: 'day-thu',
+    leave: 'day',
+    title: '周四晚去 · 周日晚回',
+    note: '请周五假 · 畅享周五到周日',
+    badge: '72h',
+    icon: 'luggage',
+    outDay: 'thu',
+    outCmp: 'gte',
+    outBound: '17:30',
+    backDay: 'sun',
+    backCmp: 'gte',
+    backBound: '17:30',
+  },
+  {
+    key: 'day-mon',
+    leave: 'day',
+    title: '周五晚去 · 周一晚回',
+    note: '请周一假 · 畅享周六到周一',
+    badge: '72h',
+    icon: 'sunset',
+    outDay: 'fri',
+    outCmp: 'gte',
+    outBound: '17:30',
+    backDay: 'mon',
+    backCmp: 'gte',
+    backBound: '17:30',
+  },
+  {
+    key: 'custom',
+    leave: 'custom',
+    title: '自选日期',
+    note: '自己点去程和返程',
+    badge: '自选',
+    icon: 'luggage',
+    outDay: 'fri',
+    outCmp: 'gte',
+    outBound: '00:00',
+    backDay: 'sun',
+    backCmp: 'gte',
+    backBound: '00:00',
+  },
+]
+
+function weekendPlanOptions(count = 4, today = dayjs()) {
+  const plans = []
+  const todayStr = today.format('YYYY-MM-DD')
+  for (let i = WEEKEND_LIST_FROM; plans.length < count && i < WEEKEND_LIST_FROM + count + 2; i++) {
+    const [sat, sun] = weekendBounds(i, today)
+    if (sun.format('YYYY-MM-DD') < todayStr) continue
+    plans.push({ index: i, thu: sat.subtract(2, 'day'), fri: sat.subtract(1, 'day'), sat, sun, mon: sun.add(1, 'day') })
+  }
+  return plans
+}
+
+function findWeekendPlan(index) {
+  return weekendPlanOptions(8).find((item) => item.index === index) || weekendPlanOptions(8)[0]
+}
+
+function weekendPlanChip(plan) {
+  const prefix = plan.index === WEEKEND_LIST_FROM ? '下周末 ' : plan.index === WEEKEND_RECOMMEND_FROM ? '下下周末 ' : ''
+  return `${prefix}${plan.fri.format('M/D')}–${plan.sun.format('M/D')}`
+}
+
+function hhmmMatch(dep, cmp, bound, boundEnd) {
+  const time = String(dep || '')
+  if (!/^\d{2}:\d{2}$/.test(time)) return false
+  if (cmp === 'between') return time >= bound && time < (boundEnd || bound)
+  return cmp === 'lte' ? time <= bound : time >= bound
+}
+
+function compactLegFlights(records, cmp, bound, boundEnd) {
+  const map = new Map()
+  for (const rec of records || []) {
+    if (!hhmmMatch(rec.dep_time, cmp, bound, boundEnd)) continue
+    if (!rec.origin?.city || !rec.dest?.city || rec.origin.city === rec.dest.city) continue
+    const key = `${rec.flight_no}|${rec.dep_time}|${rec.arr_time}|${rec.origin.iata}|${rec.dest.iata}`
+    let item = map.get(key)
+    if (!item) {
+      item = {
+        flight_no: rec.flight_no,
+        dep_time: rec.dep_time || '',
+        arr_time: rec.arr_time || '',
+        origin: rec.origin,
+        dest: rec.dest,
+        product: new Set(),
+      }
+      map.set(key, item)
+    }
+    for (const part of String(rec.product || '').split('/')) {
+      if (part === '666' || part === '2666') item.product.add(part)
+    }
+  }
+  return [...map.values()]
+    .map((item) => ({ ...item, product: [...item.product].sort().join('/') }))
+    .sort((a, b) => a.dep_time.localeCompare(b.dep_time) || String(a.flight_no).localeCompare(String(b.flight_no)))
+}
+
+function minutesOf(dep) {
+  const [hour, minute] = String(dep || '').split(':').map((part) => Number(part))
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return 0
+  return hour * 60 + minute
+}
+
+function hasProduct(product, tier) {
+  return String(product || '').split('/').map((part) => part.trim()).includes(tier)
+}
+
+function orderLegFlights(flights, prefer) {
+  const score = (flight) => {
+    const mins = minutesOf(flight.dep_time)
+    if (prefer === 'early') return mins
+    if (prefer === 'late') return -mins
+    return Math.abs(mins - (20 * 60 + 30))
+  }
+  return [...flights].sort((a, b) => {
+    const tier = Number(hasProduct(b.product, '666')) - Number(hasProduct(a.product, '666'))
+    if (tier) return tier
+    return score(a) - score(b) || String(a.flight_no).localeCompare(String(b.flight_no))
+  })
+}
+
+function pairScore(outbound, inbound) {
+  let score = 20
+  if (hasProduct(outbound?.product, '666')) score += 50
+  if (hasProduct(inbound?.product, '666')) score += 50
+  if (flightMark(outbound?.dep_time, 'out')) score += 8
+  if (flightMark(inbound?.dep_time, 'back')) score += 8
+  return score
+}
+
+function planTags(outbound, inbound) {
+  const tags = []
+  const outOk = hasProduct(outbound?.product, '666')
+  const backOk = hasProduct(inbound?.product, '666')
+  if (outOk && backOk) tags.push({ text: '双程666可换', color: 'green' })
+  else {
+    if (!outOk) tags.push({ text: '去程2666专享', color: 'default' })
+    if (!backOk) tags.push({ text: '返程2666专享', color: 'default' })
+  }
+  const outMark = flightMark(outbound?.dep_time, 'out')
+  const backMark = flightMark(inbound?.dep_time, 'back')
+  if (outMark) tags.push({ text: outMark, color: 'gold' })
+  if (backMark && backMark !== outMark) tags.push({ text: backMark, color: 'blue' })
+  return tags
+}
+
+function staySpanLabel(outDate, backDate) {
+  const nights = dayjs(backDate).startOf('day').diff(dayjs(outDate).startOf('day'), 'day')
+  if (!Number.isFinite(nights) || nights <= 0) return ''
+  return `${nights + 1}天${nights}晚`
+}
+
+function stayHours(outDate, outbound, backDate, inbound) {
+  if (!outbound?.dep_time || !inbound?.dep_time) return 0
+  const start = dayjs(`${outDate} ${outbound.dep_time}`)
+  const end = dayjs(`${backDate} ${inbound.dep_time}`)
+  const hours = end.diff(start, 'hour', true)
+  return Number.isFinite(hours) && hours > 0 ? Math.round(hours) : 0
+}
+
+function pairWeekendCities(outRecords, backRecords, pattern) {
+  const outs = compactLegFlights(outRecords, pattern.outCmp, pattern.outBound, pattern.outBoundEnd)
+  const backs = compactLegFlights(backRecords, pattern.backCmp, pattern.backBound, pattern.backBoundEnd)
+  const byCity = new Map()
+  for (const flight of outs) {
+    const city = flight.dest.city
+    if (!byCity.has(city)) byCity.set(city, { city, outs: [], backs: [] })
+    byCity.get(city).outs.push(flight)
+  }
+  for (const flight of backs) {
+    const card = byCity.get(flight.origin.city)
+    if (card) card.backs.push(flight)
+  }
+  const outPrefer = pattern.outCmp === 'lte' ? 'early' : 'late'
+  return [...byCity.values()]
+    .filter((card) => card.outs.length && card.backs.length)
+    .map((card) => ({
+      ...card,
+      outs: orderLegFlights(card.outs, outPrefer).slice(0, 4),
+      backs: orderLegFlights(card.backs, pattern.backCmp === 'lte' ? 'early' : 'evening').slice(0, 4),
+    }))
+    .sort((a, b) => a.city.localeCompare(b.city, 'zh'))
+}
+
+function weekendAirport(point) {
+  const name = String(point?.airport || point?.city || '').replace(/国际机场|机场/g, '')
+  return `${name || point?.city || ''}(${point?.iata || ''})`
+}
+
+function productText(product) {
+  const parts = String(product || '').split('/').filter(Boolean)
+  if (parts.includes('666') && parts.includes('2666')) return '666 / 2666 通用'
+  if (parts.includes('2666')) return '2666 专享'
+  if (parts.includes('666')) return '666'
+  return ''
+}
+
+function productTone(product) {
+  const parts = String(product || '').split('/')
+  if (parts.includes('666')) return 'is-666'
+  if (parts.includes('2666')) return 'is-2666'
+  return ''
+}
+
+/* 国内航班同为北京时间，到达早于起飞视为跨日 */
+function flightDuration(dep, arr) {
+  if (!/^\d{2}:\d{2}$/.test(String(dep || '')) || !/^\d{2}:\d{2}$/.test(String(arr || ''))) return { text: '', nextDay: false }
+  let mins = minutesOf(arr) - minutesOf(dep)
+  const nextDay = mins < 0
+  if (nextDay) mins += 24 * 60
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  return { text: h ? `${h}h${m ? `${m}m` : ''}` : `${m}m`, nextDay }
+}
+
+function airportShort(point) {
+  const city = point?.city || ''
+  const name = String(point?.airport || '').replace(/国际机场|机场/g, '').replace(city, '').trim()
+  return [name || point?.iata || '', point?.terminal || ''].filter(Boolean).join(' ')
+}
+
+const CITY_FLAVORS = {
+  海口: '海岛免税', 三亚: '海岛度假', 琼海: '海岛度假', 成都: '川渝美食', 重庆: '川渝美食', 昆明: '彩云之南', 大理: '彩云之南', 丽江: '彩云之南',
+  西双版纳: '彩云之南', 西安: '十三朝古都', 北京: '帝都打卡', 上海: '魔都漫游', 杭州: '西湖慢游', 厦门: '海岛文艺', 青岛: '海滨啤酒',
+  哈尔滨: '冰雪之城', 长沙: '网红夜宵', 广州: '早茶美食', 乌鲁木齐: '西域风光', 拉萨: '雪域高原', 桂林: '山水甲天下', 贵阳: '避暑山城', 大连: '浪漫海滨',
+}
+
+const LEAVE_PILL_WORD = { none: '畅玩', half: '轻度假', day: '小长假' }
+
+function hourPillText(badge, leave) {
+  const word = LEAVE_PILL_WORD[leave]
+  return badge && word ? `${badge} ${word}` : badge
+}
+
+function weekendScanLabel(origins) {
+  const names = (origins || []).map(cityNameOf).filter(Boolean)
+  if (!names.length) return '扫描'
+  const head = names.slice(0, 2).join('/')
+  return `扫描 ${head}${names.length > 2 ? '等' : ''} 出发方案`
+}
+
+function lastSundayOf(year, month) {
+  const end = dayjs(new Date(year, month + 1, 0))
+  return end.subtract(end.day(), 'day')
+}
+
+/* IATA 航季：夏秋季始于 3 月最后一个周日，冬春季始于 10 月最后一个周日 */
+function flightSeasonInfo(today = dayjs()) {
+  const year = today.year()
+  const summer = lastSundayOf(year, 2)
+  const winter = lastSundayOf(year, 9)
+  const day = today.startOf('day')
+  if (day.isBefore(summer)) return { name: `${year - 1}冬春航季`, next: summer, nextName: '夏秋', days: summer.diff(day, 'day'), tone: 'winter' }
+  if (day.isBefore(winter)) return { name: `${year}夏秋航季`, next: winter, nextName: '冬春', days: winter.diff(day, 'day'), tone: 'summer' }
+  const nextSummer = lastSundayOf(year + 1, 2)
+  return { name: `${year}冬春航季`, next: nextSummer, nextName: '夏秋', days: nextSummer.diff(day, 'day'), tone: 'winter' }
+}
+
+function greatCircleKm(a, b) {
+  if (!a || !b || !Number.isFinite(a.lat) || !Number.isFinite(b.lat)) return 0
+  const rad = Math.PI / 180
+  const dLat = (b.lat - a.lat) * rad
+  const dLon = (b.lon - a.lon) * rad
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2
+  return Math.round(2 * 6371 * Math.asin(Math.sqrt(h)))
+}
+
+function flightMark(dep, kind) {
+  const mins = minutesOf(dep)
+  if (kind === 'back' && mins >= 19 * 60 && mins <= 21 * 60 + 30) return '黄金档'
+  if (mins <= 9 * 60 + 30) return '晨光班'
+  if (mins >= 17 * 60 + 30) return '下班飞'
+  return ''
+}
+
+function WeekendSeatLine({ seat }) {
+  if (!seat) return null
+  const released = seat.plusSeats > 0 && (seat.plusPrice == null || seat.plusPrice === 199)
+  if (released) {
+    return (
+      <div className="weekend-seat">
+        199票余 <b>{seat.plusSeats}</b> 张
+        {(seat.plusCabins || []).slice(0, 6).map((cabin) => (
+          <Tag key={cabin.cabin} style={{ marginInlineEnd: 0 }}>{cabin.cabin}×{cabin.qty}</Tag>
+        ))}
+      </div>
+    )
+  }
+  if (seat.plusNote && !seat.plusSeats) {
+    return <div className="weekend-seat is-miss">{seat.plusNote}</div>
+  }
+  return <div className="weekend-seat is-miss">未放199票</div>
+}
+
+function cnWeekday(iso) {
+  return ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][dayjs(iso).day()] || ''
+}
+
+function WeekendDateCalendar({ out, back, focus, onPick }) {
+  const minMonth = dayjs().startOf('month')
+  const maxMonth = dayjs().add(8, 'month').startOf('month')
+  const [view, setView] = useState(() => dayjs(out || undefined).startOf('month'))
+  useEffect(() => {
+    const anchor = out || focus
+    if (anchor) setView(dayjs(anchor).startOf('month'))
+  }, [out, focus])
+  const go = (delta) => {
+    setView((current) => {
+      const next = current.add(delta, 'month')
+      if (next.isBefore(minMonth)) return minMonth
+      if (next.isAfter(maxMonth)) return maxMonth
+      return next
+    })
+  }
+  const first = view.startOf('month')
+  const offset = (first.day() === 0 ? 7 : first.day()) - 1
+  const cells = []
+  for (let i = 0; i < offset; i += 1) cells.push(null)
+  for (let day = 1; day <= view.daysInMonth(); day += 1) cells.push(first.date(day))
+  while (cells.length % 7 !== 0) cells.push(null)
+  const today = dayjs().format('YYYY-MM-DD')
+  const choose = (ds) => {
+    if (ds < today) return
+    if (!out || back || ds < out) onPick(ds, '')
+    else onPick(out, ds)
+  }
+  return (
+    <div className="cal-wrap weekend-cal">
+      <div className="cal-head">
+        <Button type="text" icon={<ChevronLeftIcon />} aria-label="上个月" disabled={view.isSame(minMonth, 'month')} onClick={() => go(-1)} />
+        <div className="cal-title">{view.format('YYYY年M月')}</div>
+        <Button type="text" icon={<ChevronRightIcon />} aria-label="下个月" disabled={view.isSame(maxMonth, 'month')} onClick={() => go(1)} />
+      </div>
+      <div className="cal-week" aria-hidden="true">
+        {WEEK_LABELS.map((label, index) => <div key={label} className={index >= 5 ? 'cal-week-end' : undefined}>{label}</div>)}
+      </div>
+      <div className="cal-grid" role="grid" aria-label="先点去程，再点返程">
+        {cells.map((day, index) => {
+          if (!day) return <div key={`blank-${index}`} className="cal-cell cal-cell-blank" />
+          const ds = day.format('YYYY-MM-DD')
+          const past = ds < today
+          const role = ds === out ? '去' : ds === back ? '返' : ''
+          const span = out && back && ds > out && ds < back
+          return (
+            <button
+              key={ds}
+              type="button"
+              className={`cal-cell${past ? ' cal-cell-past' : ' cal-cell-pick'}${role === '去' ? ' is-out' : ''}${role === '返' ? ' is-back' : ''}${span ? ' is-span' : ''}`}
+              disabled={past}
+              onClick={() => choose(ds)}
+            >
+              <span className="cal-num">{day.date()}</span>
+              {role ? <span className="cal-role">{role}</span> : null}
+            </button>
+          )
+        })}
+      </div>
+      <div className="cal-legend">先点去程，再点返程。想重选时，再点一天作为新的去程。</div>
+    </div>
+  )
+}
+
+function WeekendFlight({ kind, flight, seat, checking, disabled, onCheck }) {
+  const mark = flightMark(flight.dep_time, kind)
+  const dur = flightDuration(flight.dep_time, flight.arr_time)
+  const product = productText(flight.product)
+  return (
+    <div className={`weekend-flight weekend-flight-${kind}`}>
+      <span className={`weekend-leg-badge is-${kind}`}>{kind === 'back' ? '返程' : '去程'}</span>
+      <div className="weekend-flight-main">
+        <div className="weekend-flight-top">
+          <span className="mono weekend-leg-no">{flight.flight_no}</span>
+          {airportShort(flight.origin) ? <span className="weekend-leg-chip">{airportShort(flight.origin)}</span> : null}
+        </div>
+        <div className="weekend-flight-times mono">
+          <b>{flight.dep_time || '--:--'}</b>
+          <span className="weekend-flight-dur">{dur.text}<i aria-hidden="true" /></span>
+          <b>{flight.arr_time || '--:--'}{dur.nextDay ? <sup>+1</sup> : null}</b>
+        </div>
+        <div className="weekend-leg-route">{weekendAirport(flight.origin)} → {weekendAirport(flight.dest)}</div>
+        <WeekendSeatLine seat={seat} />
+      </div>
+      <div className="weekend-flight-side">
+        {mark ? <span className="weekend-flight-mark">{mark}</span> : null}
+        {product ? <span className={`weekend-product-badge ${productTone(flight.product)}`}>{product}</span> : null}
+        <Button
+          size="small"
+          loading={checking}
+          disabled={disabled && !checking}
+          onClick={onCheck}
+        >
+          查余票
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function WeekendAlt({ kind, flight, active, onPick }) {
+  const mark = flightMark(flight.dep_time, kind)
+  return (
+    <button type="button" className={`weekend-alt${active ? ' is-on' : ''}`} onClick={onPick}>
+      <span className="mono weekend-leg-no">{flight.flight_no}</span>
+      <span className="mono">{flight.dep_time || '--:--'}–{flight.arr_time || '--:--'}</span>
+      {mark ? <span className="weekend-alt-mark">{mark}</span> : null}
+      <span className={`weekend-alt-product ${productTone(flight.product)}`}>{productText(flight.product)}</span>
+    </button>
+  )
+}
+
+function weekendLegKey(flight, date) {
+  return `${flight?.flight_no || ''}|${date || ''}|${flight?.origin?.iata || ''}|${flight?.dest?.iata || ''}`
+}
+
+function WeekendPlanCard({ card, busy, seatBusy, onFollow, onCheckSeats, onSeatLock }) {
+  const [outIdx, setOutIdx] = useState(0)
+  const [backIdx, setBackIdx] = useState(0)
+  const [seats, setSeats] = useState(null)
+  const [checkingKey, setCheckingKey] = useState('')
+  const outbound = card.outs[outIdx] || card.outs[0]
+  const inbound = card.backs[backIdx] || card.backs[0]
+  const outKey = weekendLegKey(outbound, card.outDate)
+  const backKey = weekendLegKey(inbound, card.backDate)
+  const checkLeg = async (flight, date, side) => {
+    if (!onCheckSeats || !flight) return
+    const key = weekendLegKey(flight, date)
+    setCheckingKey(key)
+    if (onSeatLock) onSeatLock(true)
+    try {
+      const seat = await onCheckSeats(flight, date)
+      setSeats((prev) => ({
+        ...(prev || {}),
+        ...(side === 'back' ? { back: seat, backKey: key } : { out: seat, outKey: key }),
+      }))
+    } catch (err) {
+      const seat = { plusNote: err.message || '余票没有查到' }
+      setSeats((prev) => ({
+        ...(prev || {}),
+        ...(side === 'back' ? { back: seat, backKey: key } : { out: seat, outKey: key }),
+      }))
+    } finally {
+      setCheckingKey('')
+      if (onSeatLock) onSeatLock(false)
+    }
+  }
+  const [open, setOpen] = useState(false)
+  const [distance, setDistance] = useState(0)
+  useEffect(() => {
+    if (!open || !outbound) return undefined
+    let alive = true
+    loadWeekendMapBase().then((base) => {
+      if (alive) setDistance(greatCircleKm(base.airports[outbound.origin?.iata], base.airports[outbound.dest?.iata]))
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [open, outbound])
+  const hours = stayHours(card.outDate, outbound, card.backDate, inbound)
+  const span = staySpanLabel(card.outDate, card.backDate)
+  const pill = card.leave === 'custom' && span ? span : hourPillText(card.badge, card.leave)
+  const fromCity = outbound?.origin?.city || card.fromCity || ''
+  const leave = WEEKEND_LEAVES.find((item) => item.key === card.leave)?.label || ''
+  const score = pairScore(outbound, inbound)
+  const tags = planTags(outbound, inbound).filter((tag) => tag.color === 'green' || tag.color === 'default')
+  const flavor = CITY_FLAVORS[card.city]
+  const altCount = Math.max(0, card.outs.length - 1) + Math.max(0, card.backs.length - 1)
+  return (
+    <Card className="weekend-dest" size="small" id={weekendPlanDomId(card)}>
+      <div className="weekend-card-head">
+        <div>
+          <div className="weekend-card-title">
+            <span className="weekend-card-city">{cityWithProvince(card.city)}</span>
+            {flavor ? <span className="weekend-flavor">{flavor}</span> : null}
+          </div>
+          <div className="weekend-card-sub">从{fromCity}出发{span ? ` · ${span}` : ''}</div>
+        </div>
+        <div className="weekend-card-marks">
+          <span className="weekend-score">匹配度 {score}</span>
+          {tags.map((tag) => (
+            <Tag key={tag.text} color={tag.color} style={{ marginInlineEnd: 0 }}>{tag.text}</Tag>
+          ))}
+        </div>
+      </div>
+      <div className="weekend-plan-line">
+        {leave ? <Tag color={card.leave === 'none' ? 'green' : 'orange'} style={{ marginInlineEnd: 0 }}>{leave}</Tag> : null}
+        <span>
+          {String(card.outDate || '').slice(5)} {cnWeekday(card.outDate)} {outbound?.dep_time} 出发 → {String(card.backDate || '').slice(5)} {cnWeekday(card.backDate)} {inbound?.dep_time} 返回
+          {hours ? `，在${card.city}约 ${hours} 小时` : ''}
+        </span>
+        {pill ? <span className="weekend-hour-pill">{pill}</span> : null}
+      </div>
+      {outbound ? (
+        <WeekendFlight
+          kind="out"
+          flight={outbound}
+          seat={seats?.outKey === outKey ? seats.out : null}
+          checking={checkingKey === outKey}
+          disabled={seatBusy && checkingKey !== outKey}
+          onCheck={() => checkLeg(outbound, card.outDate, 'out')}
+        />
+      ) : null}
+      {inbound ? (
+        <WeekendFlight
+          kind="back"
+          flight={inbound}
+          seat={seats?.backKey === backKey ? seats.back : null}
+          checking={checkingKey === backKey}
+          disabled={seatBusy && checkingKey !== backKey}
+          onCheck={() => checkLeg(inbound, card.backDate, 'back')}
+        />
+      ) : null}
+      {open && altCount > 0 && (
+        <div className="weekend-alts">
+          <div className="weekend-alts-title">同日其他可选（点选替换上面的班次）</div>
+          {card.outs.length > 1 && (
+            <div className="weekend-alts-row">
+              <span>去程</span>
+              {card.outs.map((flight, index) => (
+                <WeekendAlt
+                  key={`out-${flight.flight_no}-${flight.dep_time}-${flight.origin?.iata}`}
+                  kind="out"
+                  flight={flight}
+                  active={index === outIdx}
+                  onPick={() => setOutIdx(index)}
+                />
+              ))}
+            </div>
+          )}
+          {card.backs.length > 1 && (
+            <div className="weekend-alts-row">
+              <span>返程</span>
+              {card.backs.map((flight, index) => (
+                <WeekendAlt
+                  key={`back-${flight.flight_no}-${flight.dep_time}-${flight.dest?.iata}`}
+                  kind="back"
+                  flight={flight}
+                  active={index === backIdx}
+                  onPick={() => setBackIdx(index)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {open && (
+        <div className="weekend-fare">
+          <div className="weekend-fare-title">会员卡兑换费用参考</div>
+          <ul>
+            <li>票面：放出 199 票时，666 / 2666 每程固定 <b>¥199</b> 兑换，往返 ¥398</li>
+            <li>机场建设费：每程 ¥50，往返 ¥100</li>
+            <li>燃油附加费：按出票当日标准另计{distance ? `（本航线约 ${distance} km，${distance > 800 ? '属 800 km 以上档' : '属 800 km 以内档'}）` : ''}</li>
+            <li>预估：往返约 <b className="is-price">¥498</b> + 燃油附加费</li>
+          </ul>
+        </div>
+      )}
+      <div className="weekend-actions">
+        <Button onClick={() => setOpen((prev) => !prev)}>
+          {open ? '收起详情' : `更多班次与费用${altCount ? `（另有 ${altCount} 班）` : ''}`}
+        </Button>
+        <Button
+          type="primary"
+          icon={<PlusIcon />}
+          loading={busy}
+          onClick={() => onFollow({ ...card, outs: [outbound], backs: [inbound] })}
+        >
+          开启双向关注
+        </Button>
+      </div>
+    </Card>
+  )
+}
+
+let weekendMapCache = null
+
+function loadWeekendMapBase() {
+  if (weekendMapCache) return Promise.resolve(weekendMapCache)
+  if (!loadWeekendMapBase.pending) {
+    loadWeekendMapBase.pending = Promise.all([
+      fetch('/api/map/china').then((res) => res.json()),
+      fetch('/api/map/network').then((res) => res.json()),
+    ]).then(([china, network]) => {
+      const airports = {}
+      for (const airport of network.airports || []) airports[airport.iata] = airport
+      weekendMapCache = { provinces: china.provinces || [], airports }
+      return weekendMapCache
+    })
+  }
+  return loadWeekendMapBase.pending
+}
+
+function reachKind(card) {
+  const outOk = hasProduct(card.outs[0]?.product, '666')
+  const backOk = hasProduct(card.backs[0]?.product, '666')
+  return outOk && backOk ? '666' : '2666'
+}
+
+function reachProductLabel(card) {
+  const names = new Set()
+  for (const flight of [card.outs[0], card.backs[0]]) {
+    for (const name of String(flight?.product || '').split('/')) {
+      if (name === '666' || name === '2666') names.add(name)
+    }
+  }
+  if (reachKind(card) === '666' && names.has('2666')) return '666/2666'
+  if (reachKind(card) === '666') return '666'
+  return '2666'
+}
+
+function weekendPlanDomId(card) {
+  return `weekend-plan-${card.fromCity || ''}-${card.city || ''}`
+}
+
+function reachKindOf(card, variant) {
+  if (variant === 'oneway') return hasProduct((card.outs[0] || card.backs[0])?.product, '666') ? '666' : '2666'
+  return reachKind(card)
+}
+
+function reachProductOf(card, variant) {
+  if (variant !== 'oneway') return reachProductLabel(card)
+  const names = new Set()
+  for (const flight of (card.outs?.length ? card.outs : card.backs) || []) {
+    for (const name of String(flight?.product || '').split('/')) {
+      if (name === '666' || name === '2666') names.add(name)
+    }
+  }
+  if (names.has('666') && names.has('2666')) return '666/2666'
+  if (names.has('666')) return '666'
+  return '2666'
+}
+
+function reachScoreOf(card, variant) {
+  if (variant === 'oneway') {
+    const flight = card.outs?.[0] || card.backs?.[0]
+    const counted = card.outs?.length ? card.outs : (card.backs || [])
+    return pairScore(flight, card.trip === 'round' ? card.backs?.[0] : null) + Math.min(24, counted.length)
+  }
+  return pairScore(card.outs?.[0], card.backs?.[0])
+}
+
+function timeFlyLabel(dep) {
+  const time = String(dep || '')
+  return /^\d{2}:\d{2}$/.test(time) ? `${time}飞` : ''
+}
+
+function timeFlyLabels(flights, limit = 2) {
+  const seen = new Set()
+  const labels = []
+  const ordered = [...(flights || [])].sort((a, b) => String(a.dep_time || '').localeCompare(String(b.dep_time || '')))
+  for (const flight of ordered) {
+    const label = timeFlyLabel(flight.dep_time)
+    if (!label || seen.has(label)) continue
+    seen.add(label)
+    labels.push(label)
+    if (labels.length >= limit) break
+  }
+  return labels
+}
+
+function onewayReachCards(records, returns) {
+  const backByPair = new Map()
+  for (const rec of returns || []) {
+    const city = rec.origin?.city
+    const fromCity = rec.dest?.city
+    if (!city || !fromCity) continue
+    const key = `${fromCity}|${city}`
+    if (!backByPair.has(key)) backByPair.set(key, [])
+    backByPair.get(key).push(rec)
+  }
+  const byCity = new Map()
+  for (const rec of records || []) {
+    if (rec.leg === 'back') continue
+    const city = rec.dest?.city
+    const fromCity = rec.origin?.city
+    if (!city || !fromCity) continue
+    const key = `${fromCity}|${city}`
+    if (!byCity.has(key)) byCity.set(key, { city, fromCity, outs: [], backs: backByPair.get(key) || [] })
+    byCity.get(key).outs.push(rec)
+  }
+  for (const [key, backs] of backByPair) {
+    if (byCity.has(key)) continue
+    const [fromCity, city] = key.split('|')
+    byCity.set(key, { city, fromCity, outs: [], backs })
+  }
+  return [...byCity.values()].map((card) => {
+    const outs = orderLegFlights(card.outs, 'evening')
+    const backs = orderLegFlights(card.backs, 'evening')
+    const trip = outs.length && backs.length ? 'round' : outs.length ? 'out' : 'back'
+    return { ...card, outs, backs, trip }
+  })
+}
+
+function tripLabel(card) {
+  if (card?.trip === 'round') return '往返'
+  if (card?.trip === 'back') return '有回无去'
+  return '有去无回'
+}
+
+/* 地图色板与 styles.css 的浅/暗 token 同源；颜色值为 "r, g, b" 便于拼 rgba */
+const MAP_THEMES = {
+  light: {
+    sea: ['#F4F7FB', '#E8EEF6'], land: '#FFFFFF', border: 'rgba(110, 130, 158, 0.34)',
+    text: '#1A2333', muted: '#5A6577', halo: 'rgba(255, 255, 255, 0.92)',
+    card: 'rgba(255, 255, 255, 0.96)', shadow: 'rgba(20, 40, 80, 0.16)',
+    origin: '212, 83, 43', pin666: '45, 157, 95', pin2666: '139, 150, 168',
+    round: '45, 157, 95', out: '178, 110, 0', back: '0, 84, 166', heat: '0, 84, 166', heatOpacity: 0.3,
+  },
+  dark: {
+    sea: ['#0E141A', '#111922'], land: '#1A232D', border: 'rgba(150, 170, 195, 0.2)',
+    text: '#E6EDF3', muted: '#96A3B4', halo: 'rgba(14, 20, 26, 0.9)',
+    card: 'rgba(22, 29, 38, 0.95)', shadow: 'rgba(0, 0, 0, 0.45)',
+    origin: '240, 138, 93', pin666: '79, 174, 119', pin2666: '120, 134, 154',
+    round: '79, 174, 119', out: '224, 168, 73', back: '91, 155, 211', heat: '91, 155, 211', heatOpacity: 0.34,
+  },
+}
+
+function tripTone(trip, dark = false) {
+  const palette = MAP_THEMES[dark ? 'dark' : 'light']
+  const rgb = trip === 'round' ? palette.round : trip === 'back' ? palette.back : palette.out
+  return { rgb, pin: `rgb(${rgb})`, text: `rgb(${rgb})`, stroke: `rgba(${rgb}, 0.4)` }
+}
+
+/* 单色热度：只用主题主色的深浅表达班次多少，不和图钉、标签抢颜色 */
+const heatPaletteCache = {}
+function heatPalette(rgb) {
+  if (heatPaletteCache[rgb]) return heatPaletteCache[rgb]
+  const canvas = document.createElement('canvas')
+  canvas.width = 256
+  canvas.height = 1
+  const ctx = canvas.getContext('2d')
+  const grad = ctx.createLinearGradient(0, 0, 256, 0)
+  grad.addColorStop(0, `rgba(${rgb}, 0)`)
+  grad.addColorStop(0.35, `rgba(${rgb}, 0.45)`)
+  grad.addColorStop(1, `rgba(${rgb}, 1)`)
+  ctx.fillStyle = grad
+  ctx.fillRect(0, 0, 256, 1)
+  heatPaletteCache[rgb] = ctx.getImageData(0, 0, 256, 1).data
+  return heatPaletteCache[rgb]
+}
+
+/* 先在灰度层叠加强度，再按色带着色：相邻城市的热度会真实叠加 */
+function drawHeatLayer(ctx, points, radius, opacity, rgb) {
+  if (!points.length) return
+  const { width, height } = ctx.canvas
+  const layer = document.createElement('canvas')
+  layer.width = width
+  layer.height = height
+  const lc = layer.getContext('2d')
+  for (const point of points) {
+    const r = radius * point.spread
+    const grad = lc.createRadialGradient(point.x, point.y, 0, point.x, point.y, r)
+    grad.addColorStop(0, `rgba(0, 0, 0, ${point.weight})`)
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)')
+    lc.fillStyle = grad
+    lc.beginPath()
+    lc.arc(point.x, point.y, r, 0, Math.PI * 2)
+    lc.fill()
+  }
+  const image = lc.getImageData(0, 0, width, height)
+  const data = image.data
+  const palette = heatPalette(rgb)
+  for (let i = 3; i < data.length; i += 4) {
+    const a = data[i]
+    if (!a) continue
+    const o = a * 4
+    data[i - 3] = palette[o]
+    data[i - 2] = palette[o + 1]
+    data[i - 1] = palette[o + 2]
+    data[i] = Math.min(255, palette[o + 3] * opacity)
+  }
+  lc.putImageData(image, 0, 0)
+  ctx.drawImage(layer, 0, 0)
+}
+
+function drawRouteArc(ctx, from, to, rgb, alpha, lineWidth) {
+  const [x1, y1] = from
+  const [x2, y2] = to
+  const dist = Math.hypot(x2 - x1, y2 - y1)
+  if (dist < 2) return
+  const bend = Math.min(0.22 * dist, 120)
+  const nx = (y1 - y2) / dist
+  const ny = (x2 - x1) / dist
+  const flip = ny > 0 ? -1 : 1
+  const cx = (x1 + x2) / 2 + nx * bend * flip
+  const cy = (y1 + y2) / 2 + ny * bend * flip
+  const grad = ctx.createLinearGradient(x1, y1, x2, y2)
+  grad.addColorStop(0, `rgba(${rgb}, ${alpha * 0.35})`)
+  grad.addColorStop(1, `rgba(${rgb}, ${alpha})`)
+  ctx.beginPath()
+  ctx.moveTo(x1, y1)
+  ctx.quadraticCurveTo(cx, cy, x2, y2)
+  ctx.strokeStyle = grad
+  ctx.lineWidth = lineWidth
+  ctx.lineCap = 'round'
+  ctx.stroke()
+}
+
+function visibleMapCards(cards, filter, variant, tripFilter) {
+  return cards.filter((card) => {
+    if (filter !== 'all' && reachKindOf(card, variant) !== filter) return false
+    if (variant === 'oneway' && tripFilter !== 'all' && card.trip !== tripFilter) return false
+    return true
+  })
+}
+
+const MAP_FULL_BOUNDS = { minLon: 73.2, maxLon: 134.8, minLat: 15.6, maxLat: 53.6 }
+
+/* 按出发地与可达地收紧视野，并补齐到画布宽高比；范围比全国还大时退回全国 */
+function fitMapBounds(points, width, height, pad) {
+  if (!points.length) return MAP_FULL_BOUNDS
+  const lons = points.map((pt) => pt[0])
+  const lats = points.map((pt) => pt[1])
+  let minLon = Math.min(...lons) - 3.5
+  let maxLon = Math.max(...lons) + 3.5
+  let minLat = Math.min(...lats) - 2.6
+  let maxLat = Math.max(...lats) + 3.2
+  if (maxLat - minLat < 14) {
+    const mid = (minLat + maxLat) / 2
+    minLat = mid - 7
+    maxLat = mid + 7
+  }
+  const cos = Math.cos((((minLat + maxLat) / 2) * Math.PI) / 180)
+  const target = (width - pad * 2) / (height - pad * 2)
+  const spanX = (maxLon - minLon) * cos
+  const spanY = maxLat - minLat
+  if (spanX / spanY < target) {
+    const need = (spanY * target) / cos
+    const mid = (minLon + maxLon) / 2
+    minLon = mid - need / 2
+    maxLon = mid + need / 2
+  } else {
+    const need = spanX / target
+    const mid = (minLat + maxLat) / 2
+    minLat = mid - need / 2
+    maxLat = mid + need / 2
+  }
+  if (maxLon - minLon >= MAP_FULL_BOUNDS.maxLon - MAP_FULL_BOUNDS.minLon) return MAP_FULL_BOUNDS
+  return { minLon, maxLon, minLat, maxLat }
+}
+
+function mapProjector(width, height, bounds = MAP_FULL_BOUNDS, pad = 28) {
+  const midLat = (bounds.minLat + bounds.maxLat) / 2
+  const cos = Math.cos((midLat * Math.PI) / 180)
+  const spanX = (bounds.maxLon - bounds.minLon) * cos
+  const spanY = bounds.maxLat - bounds.minLat
+  const scale = Math.min((width - pad * 2) / spanX, (height - pad * 2) / spanY)
+  const usedW = spanX * scale
+  const usedH = spanY * scale
+  const ox = (width - usedW) / 2
+  const oy = (height - usedH) / 2
+  return (lon, lat) => [ox + (lon - bounds.minLon) * cos * scale, oy + (bounds.maxLat - lat) * scale]
+}
+
+function roundBox(ctx, x, y, w, h, r) {
+  const radius = Math.min(r, w / 2, h / 2)
+  ctx.beginPath()
+  ctx.moveTo(x + radius, y)
+  ctx.arcTo(x + w, y, x + w, y + h, radius)
+  ctx.arcTo(x + w, y + h, x, y + h, radius)
+  ctx.arcTo(x, y + h, x, y, radius)
+  ctx.arcTo(x, y, x + w, y, radius)
+  ctx.closePath()
+}
+
+function drawMapDot(ctx, x, y, r, color, ratio) {
+  ctx.save()
+  ctx.shadowColor = 'rgba(20, 40, 80, 0.25)'
+  ctx.shadowBlur = 3 * ratio
+  ctx.beginPath()
+  ctx.arc(x, y, r, 0, Math.PI * 2)
+  ctx.fillStyle = color
+  ctx.fill()
+  ctx.shadowColor = 'transparent'
+  ctx.lineWidth = 1.5 * ratio
+  ctx.strokeStyle = '#fff'
+  ctx.stroke()
+  ctx.restore()
+}
+
+function reachCaption(card, variant, product) {
+  const outN = card.outs?.length || 0
+  const backN = card.backs?.length || 0
+  if (variant !== 'oneway') return `${product} · 去${outN} 回${backN}`
+  const timeSource = outN ? card.outs : card.backs
+  const times = timeFlyLabels(timeSource, 1)[0]
+  return `${times || product} · ${outN || backN}班`
+}
+
+/* 底图 + 热力层只随数据/尺寸/主题重建，悬停时只重绘连线、图钉与标签 */
+function buildReachScene({ base, cards, filter, tripFilter, variant, width, height, ratio, palette }) {
+  const grouped = new Map()
+  for (const card of visibleMapCards(cards, filter, variant, tripFilter)) {
+    const out = card.outs[0]
+    const back = card.backs[0]
+    const origin = base.airports[out?.origin?.iata || back?.dest?.iata]
+    const dest = base.airports[out?.dest?.iata || back?.origin?.iata]
+    if (!origin || !dest) continue
+    const product = reachProductOf(card, variant)
+    const spot = {
+      key: dest.iata,
+      card,
+      origin,
+      dest,
+      score: reachScoreOf(card, variant),
+      kind: reachKindOf(card, variant),
+      product,
+      caption: reachCaption(card, variant, product),
+      mapCaption: variant === 'oneway' ? reachCaption(card, variant, product) : `去${card.outs?.length || 0} 回${card.backs?.length || 0}`,
+      options: (card.outs?.length || 0) + (card.backs?.length || 0),
+    }
+    const cityKey = card.city || dest.city || dest.iata
+    const prev = grouped.get(cityKey)
+    if (!prev) grouped.set(cityKey, spot)
+    else if (spot.score > prev.score) grouped.set(cityKey, { ...spot, options: spot.options + prev.options })
+    else prev.options += spot.options
+  }
+  const spots = [...grouped.values()]
+  const pad = 26 * ratio
+  const bounds = fitMapBounds(spots.flatMap((spot) => [[spot.origin.lon, spot.origin.lat], [spot.dest.lon, spot.dest.lat]]), width, height, pad)
+  const project = mapProjector(width, height, bounds, pad)
+
+  const layer = document.createElement('canvas')
+  layer.width = width
+  layer.height = height
+  const ctx = layer.getContext('2d')
+  const sea = ctx.createLinearGradient(0, 0, 0, height)
+  sea.addColorStop(0, palette.sea[0])
+  sea.addColorStop(1, palette.sea[1])
+  ctx.fillStyle = sea
+  ctx.fillRect(0, 0, width, height)
+  ctx.lineJoin = 'round'
+  ctx.lineWidth = Math.max(1, 0.7 * ratio)
+  ctx.strokeStyle = palette.border
+  ctx.fillStyle = palette.land
+  for (const province of base.provinces) {
+    for (const poly of province.polygons || []) {
+      const ring = poly[0] || []
+      if (ring.length < 3) continue
+      ctx.beginPath()
+      ring.forEach((pt, index) => {
+        const [x, y] = project(pt[0], pt[1])
+        if (index === 0) ctx.moveTo(x, y)
+        else ctx.lineTo(x, y)
+      })
+      ctx.closePath()
+      ctx.fill()
+      ctx.stroke()
+    }
+  }
+
+  const maxOptions = Math.max(1, ...spots.map((spot) => spot.options))
+  for (const spot of spots) spot.level = spot.options / maxOptions
+  const radius = Math.max(30 * ratio, Math.min(width, height) * 0.075)
+  drawHeatLayer(ctx, spots.map((spot) => {
+    const [x, y] = project(spot.dest.lon, spot.dest.lat)
+    return { x, y, weight: 0.3 + 0.7 * spot.level, spread: 0.75 + 0.45 * spot.level }
+  }), radius, palette.heatOpacity, palette.heat)
+  return { spots, project, layer }
+}
+
+function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend', onPick }) {
+  const canvasRef = useRef(null)
+  const stageRef = useRef(null)
+  const layoutRef = useRef([])
+  const [base, setBase] = useState(null)
+  const [mapErr, setMapErr] = useState('')
+  const [hoverKey, setHoverKey] = useState('')
+  const [activeKey, setActiveKey] = useState('')
+  const [tip, setTip] = useState(null)
+  const [dark, setDark] = useState(() => document.documentElement.dataset.theme === 'dark')
+  const sceneRef = useRef(null)
+
+  useEffect(() => {
+    let alive = true
+    loadWeekendMapBase().then((data) => { if (alive) setBase(data) }).catch((err) => {
+      if (alive) setMapErr(err.message || '地图没有加载出来')
+    })
+    return () => { alive = false }
+  }, [])
+
+  useEffect(() => {
+    setHoverKey('')
+    setActiveKey('')
+    setTip(null)
+  }, [cards, filter, tripFilter])
+
+  useEffect(() => {
+    const root = document.documentElement
+    const sync = () => setDark(root.dataset.theme === 'dark')
+    sync()
+    const observer = new MutationObserver(sync)
+    observer.observe(root, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const stage = stageRef.current
+    if (!canvas || !stage || !base) return undefined
+    const draw = () => {
+      const ratio = window.devicePixelRatio || 1
+      const width = Math.max(320, stage.clientWidth)
+      const fullY = MAP_FULL_BOUNDS.maxLat - MAP_FULL_BOUNDS.minLat
+      const fullX = (MAP_FULL_BOUNDS.maxLon - MAP_FULL_BOUNDS.minLon) * Math.cos((((MAP_FULL_BOUNDS.minLat + MAP_FULL_BOUNDS.maxLat) / 2) * Math.PI) / 180)
+      const height = Math.round(Math.min(560, Math.max(380, (width - 24) * fullY / fullX + 24)))
+      const W = Math.floor(width * ratio)
+      const H = Math.floor(height * ratio)
+      if (canvas.width !== W) canvas.width = W
+      if (canvas.height !== H) canvas.height = H
+      canvas.style.width = `${width}px`
+      canvas.style.height = `${height}px`
+      const ctx = canvas.getContext('2d')
+      const palette = MAP_THEMES[dark ? 'dark' : 'light']
+      const sceneKey = `${W}|${H}|${dark}|${filter}|${tripFilter}|${variant}`
+      let scene = sceneRef.current
+      if (!scene || scene.key !== sceneKey || scene.cards !== cards || scene.base !== base) {
+        scene = { ...buildReachScene({ base, cards, filter, tripFilter, variant, width: W, height: H, ratio, palette }), key: sceneKey, cards, base }
+        sceneRef.current = scene
+      }
+      const { spots, project } = scene
+      ctx.clearRect(0, 0, W, H)
+      ctx.drawImage(scene.layer, 0, 0)
+
+      const focusKey = hoverKey || activeKey
+      const rgbOf = (spot) => (variant === 'oneway'
+        ? tripTone(spot.card.trip, dark).rgb
+        : (spot.kind === '666' ? palette.pin666 : palette.pin2666))
+      const arcOrder = [...spots].sort((a, b) => (a.key === focusKey) - (b.key === focusKey))
+      for (const spot of arcOrder) {
+        const on = spot.key === focusKey
+        const alpha = on ? 0.9 : (focusKey ? 0.06 : 0.16)
+        drawRouteArc(ctx, project(spot.origin.lon, spot.origin.lat), project(spot.dest.lon, spot.dest.lat), on ? rgbOf(spot) : palette.heat, alpha, (on ? 2 : 1) * ratio)
+      }
+
+      const origins = new Map()
+      for (const spot of spots) origins.set(spot.origin.city || spot.origin.iata, spot.origin)
+      const originBoxes = []
+      ctx.font = `600 ${12 * ratio}px "PingFang SC", "Noto Sans SC", sans-serif`
+      for (const origin of origins.values()) {
+        const [x, y] = project(origin.lon, origin.lat)
+        ctx.fillStyle = `rgba(${palette.origin}, 0.14)`
+        ctx.beginPath()
+        ctx.arc(x, y, 11 * ratio, 0, Math.PI * 2)
+        ctx.fill()
+        drawMapDot(ctx, x, y, 5 * ratio, `rgb(${palette.origin})`, ratio)
+      }
+      for (const origin of origins.values()) {
+        const [x, y] = project(origin.lon, origin.lat)
+        const text = `${origin.city} 出发`
+        const w = ctx.measureText(text).width + 4 * ratio
+        const h = 16 * ratio
+        const slots = [
+          { x: x + 10 * ratio, y: y - h / 2 },
+          { x: x - w - 10 * ratio, y: y - h / 2 },
+          { x: x + 8 * ratio, y: y + 6 * ratio },
+          { x: x - w - 8 * ratio, y: y + 6 * ratio },
+          { x: x + 8 * ratio, y: y - h - 6 * ratio },
+          { x: x - w - 8 * ratio, y: y - h - 6 * ratio },
+        ]
+        const box = slots.find((c) => !originBoxes.some((o) => !(c.x + w < o.x || o.x + o.w < c.x || c.y + h < o.y || o.y + o.h < c.y))) || slots[0]
+        originBoxes.push({ ...box, w, h })
+        ctx.lineWidth = 3 * ratio
+        ctx.strokeStyle = palette.halo
+        ctx.strokeText(text, box.x + 2 * ratio, box.y + 12 * ratio)
+        ctx.fillStyle = `rgb(${palette.origin})`
+        ctx.fillText(text, box.x + 2 * ratio, box.y + 12 * ratio)
+      }
+
+      const dotR = (spot) => (3.5 + 2.5 * (spot.level || 0)) * ratio
+      const ordered = [...spots].sort((a, b) => a.score - b.score)
+      for (const spot of ordered) {
+        const [x, y] = project(spot.dest.lon, spot.dest.lat)
+        const hot = spot.key === focusKey
+        if (hot) {
+          ctx.fillStyle = `rgba(${rgbOf(spot)}, 0.18)`
+          ctx.beginPath()
+          ctx.arc(x, y, dotR(spot) + 7 * ratio, 0, Math.PI * 2)
+          ctx.fill()
+        }
+        drawMapDot(ctx, x, y, dotR(spot) + (hot ? 1.5 * ratio : 0), `rgb(${rgbOf(spot)})`, ratio)
+      }
+
+      const placed = [
+        ...originBoxes,
+        ...[...origins.values()].map((origin) => {
+          const [x, y] = project(origin.lon, origin.lat)
+          return { x: x - 7 * ratio, y: y - 7 * ratio, w: 14 * ratio, h: 14 * ratio }
+        }),
+        ...spots.map((spot) => {
+          const [x, y] = project(spot.dest.lon, spot.dest.lat)
+          const r = dotR(spot) + 2 * ratio
+          return { x: x - r, y: y - r, w: r * 2, h: r * 2 }
+        }),
+      ]
+      const labelOrder = [...spots].sort((a, b) => (b.key === focusKey) - (a.key === focusKey) || b.score - a.score)
+      const layout = []
+      const cityFont = `600 ${12 * ratio}px "PingFang SC", "Noto Sans SC", sans-serif`
+      const subFont = `${11 * ratio}px "PingFang SC", "Noto Sans SC", sans-serif`
+      for (const spot of labelOrder) {
+        const [x, y] = project(spot.dest.lon, spot.dest.lat)
+        const city = spot.card.city || spot.dest.city
+        const caption = spot.mapCaption
+        const forced = spot.key === focusKey
+        ctx.font = cityFont
+        const cityW = ctx.measureText(city).width
+        ctx.font = subFont
+        const subW = caption ? ctx.measureText(caption).width : 0
+        const gap = 6 * ratio
+        const w = cityW + (subW ? gap + subW : 0) + 16 * ratio
+        const h = 22 * ratio
+        const off = dotR(spot) + 6 * ratio
+        const candidates = [
+          { x: x + off, y: y - h / 2 },
+          { x: x - w - off, y: y - h / 2 },
+          { x: x - w / 2, y: y - h - off },
+          { x: x - w / 2, y: y + off },
+          { x: x + off, y: y - h - 2 * ratio },
+          { x: x - w - off, y: y - h - 2 * ratio },
+          { x: x + off, y: y + 2 * ratio },
+          { x: x - w - off, y: y + 2 * ratio },
+        ]
+        let box = null
+        for (const candidate of candidates) {
+          const next = { ...candidate, w, h }
+          const outside = next.x < 4 || next.y < 4 || next.x + next.w > W - 4 || next.y + next.h > H - 4
+          const hit = placed.some((item) => !(next.x + next.w < item.x || item.x + item.w < next.x || next.y + next.h < item.y || item.y + item.h < next.y))
+          if (!outside && (!hit || forced)) {
+            box = next
+            break
+          }
+        }
+        if (!box && !forced) {
+          layout.push({ ...spot, hitX: x / ratio, hitY: y / ratio })
+          continue
+        }
+        if (!box) box = { ...candidates[0], w, h }
+        placed.push(box)
+        ctx.save()
+        ctx.shadowColor = palette.shadow
+        ctx.shadowBlur = (forced ? 10 : 4) * ratio
+        ctx.shadowOffsetY = 1 * ratio
+        roundBox(ctx, box.x, box.y, box.w, box.h, 6 * ratio)
+        ctx.fillStyle = palette.card
+        ctx.fill()
+        ctx.shadowColor = 'transparent'
+        ctx.lineWidth = ratio
+        ctx.strokeStyle = forced ? `rgba(${rgbOf(spot)}, 0.7)` : palette.border
+        ctx.stroke()
+        ctx.restore()
+        const baseY = box.y + h / 2 + 4 * ratio
+        ctx.font = cityFont
+        ctx.fillStyle = palette.text
+        ctx.fillText(city, box.x + 8 * ratio, baseY)
+        if (caption) {
+          ctx.font = subFont
+          ctx.fillStyle = palette.muted
+          ctx.fillText(caption, box.x + 8 * ratio + cityW + gap, baseY)
+        }
+        layout.push({ ...spot, hitX: x / ratio, hitY: y / ratio, tipX: box.x / ratio, tipY: box.y / ratio })
+      }
+      layoutRef.current = layout
+    }
+    draw()
+    const observer = new ResizeObserver(draw)
+    observer.observe(stage)
+    return () => observer.disconnect()
+  }, [base, cards, filter, tripFilter, hoverKey, activeKey, variant, dark])
+
+  const pickSpot = (event) => {
+    const canvas = canvasRef.current
+    if (!canvas) return null
+    const rect = canvas.getBoundingClientRect()
+    const x = event.clientX - rect.left
+    const y = event.clientY - rect.top
+    let best = null
+    let bestD = 16
+    for (const spot of layoutRef.current) {
+      const dist = Math.hypot(x - spot.hitX, y - spot.hitY)
+      if (dist < bestD) {
+        best = spot
+        bestD = dist
+      }
+    }
+    return best
+  }
+
+  const showTip = (spot) => {
+    if (!spot) {
+      setHoverKey('')
+      setTip(null)
+      return
+    }
+    const out = spot.card.outs[0]
+    const back = variant === 'oneway' ? spot.card.backs?.[0] : spot.card.backs[0]
+    const timed = [...(spot.card.outs?.length ? spot.card.outs : spot.card.backs || [])].sort((a, b) => String(a.dep_time || '').localeCompare(String(b.dep_time || '')))
+    const outLines = variant === 'oneway'
+      ? timed.slice(0, 4).map((flight) => `${spot.card.trip === 'back' ? '回程 ' : ''}${timeFlyLabel(flight.dep_time) || flight.dep_time || '--:--'}${flight.arr_time ? ` → ${flight.arr_time}` : ''}`)
+      : (out ? [`${out.flight_no}  ${out.dep_time || '--:--'}`] : [])
+    if (variant === 'oneway') {
+      const rest = timeFlyLabels(timed.slice(4), 3)
+      if (rest.length) outLines.push(rest.join(' / '))
+    }
+    setHoverKey(spot.key)
+    setTip({
+      key: spot.key,
+      x: spot.hitX + 14,
+      y: Math.max(8, spot.hitY - 72),
+      city: spot.card.city,
+      from: spot.card.fromCity,
+      score: spot.score,
+      product: spot.product,
+      caption: spot.caption,
+      outLines,
+      tripText: variant === 'oneway' ? tripLabel(spot.card) : '',
+      backText: variant === 'oneway'
+        ? (back?.dep_time ? `回程 ${timeFlyLabel(back.dep_time) || back.dep_time}` : '')
+        : (back ? `${back.flight_no}  ${back.dep_time || '--:--'}` : ''),
+    })
+  }
+
+  const shown = visibleMapCards(cards, filter, variant, tripFilter)
+  const originNames = [...new Set(shown.map((card) => card.fromCity).filter(Boolean))]
+  return (
+    <div className="weekend-map">
+      <div className="weekend-map-head">
+        <div>
+          <b>当前出发地：{originNames.join('、') || '未选'}</b>
+          <span>（{new Set(shown.map((card) => card.city)).size} 个可达城市 · 点城市{variant === 'oneway' ? '筛选列表' : '查看方案'}）</span>
+        </div>
+        <div className="weekend-map-legend">
+          {variant === 'oneway' ? (
+            <>
+              <span><i className="map-dot is-round" />往返</span>
+              <span><i className="map-dot is-out" />有去无回</span>
+              <span><i className="map-dot is-back" />有回无去</span>
+            </>
+          ) : (
+            <>
+              <span><i className="map-dot is-round" />双程 666</span>
+              <span><i className="map-dot is-muted" />2666 专享</span>
+            </>
+          )}
+          <span className="map-heat-legend" title="热度按该城市可选的去程 + 回程班次数计算">
+            可选班次 少<i aria-hidden="true" />多
+          </span>
+        </div>
+      </div>
+      {mapErr ? <Alert type="error" showIcon message={mapErr} /> : (
+        <div className="weekend-map-stage" ref={stageRef}>
+          <canvas
+            ref={canvasRef}
+            onMouseMove={(event) => {
+              const spot = pickSpot(event)
+              if ((spot?.key || '') === hoverKey) return
+              showTip(spot)
+            }}
+            onMouseLeave={() => showTip(null)}
+            onClick={(event) => {
+              const spot = pickSpot(event)
+              if (!spot) return
+              setActiveKey(spot.key)
+              showTip(spot)
+              if (onPick) onPick(spot.card)
+            }}
+          />
+          {tip && (
+            <div className="weekend-map-tip" style={{ left: tip.x, top: tip.y }}>
+              <b>{tip.city}</b>
+              <span>{variant === 'oneway' ? `从${tip.from}出发 · ${tip.tripText}` : `从${tip.from}出发 · 可选 ${tip.caption.split(' · ')[1] || ''}`}</span>
+              <span className={tip.product === '2666' ? 'is-muted' : ''}>{tip.product}</span>
+              {(tip.outLines || []).map((line) => <span key={line}>{variant === 'oneway' ? line : `去程 ${line}`}</span>)}
+              {tip.backText ? <span>返程 {tip.backText}</span> : null}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DatePickCalendar({ dates = [], value = [], onChange, single = false, after = '' }) {
+  const allowed = useMemo(() => new Set(dates), [dates])
+  const selected = useMemo(() => new Set(single ? (value ? [value] : []) : (value || [])), [value, single])
+  const now = dayjs()
+  const sorted = useMemo(() => [...dates].sort(), [dates])
+  const minMonth = sorted.length ? dayjs(sorted[0]).startOf('month') : now.startOf('month')
+  const maxMonth = sorted.length ? dayjs(sorted[sorted.length - 1]).startOf('month') : now.startOf('month')
+  const pickedMonth = single && value ? dayjs(value).startOf('month') : null
+  const startMonth = pickedMonth || now.startOf('month')
+  const initial = startMonth.isBefore(minMonth) ? minMonth : startMonth.isAfter(maxMonth) ? maxMonth : startMonth
+  const [view, setView] = useState(initial)
+  const rangeKey = `${sorted[0] || ''}|${sorted[sorted.length - 1] || ''}|${single ? value || '' : ''}`
+  useEffect(() => { setView(initial) }, [rangeKey])
+
+  const go = (delta) => {
+    setView((v) => {
+      let nv = v.add(delta, 'month')
+      if (nv.isBefore(minMonth)) nv = minMonth
+      else if (nv.isAfter(maxMonth)) nv = maxMonth
+      return nv
+    })
+  }
+
+  const emit = (next) => {
+    if (onChange) onChange([...new Set(next)].sort())
+  }
+  const toggle = (ds) => {
+    if (!allowed.has(ds) || (after && ds <= after)) return
+    if (single) {
+      if (onChange) onChange(ds)
+      return
+    }
+    emit(selected.has(ds) ? (value || []).filter((d) => d !== ds) : [...(value || []), ds])
+  }
+  const weekendsOf = (onlyMonth) => dates.filter((ds) => {
+    const d = dayjs(ds)
+    const iso = d.day() === 0 ? 7 : d.day()
+    if (iso < 6) return false
+    return !onlyMonth || d.isSame(view, 'month')
+  })
+  const weekendCount = (single ? (value ? [value] : []) : (value || [])).filter((ds) => {
+    const d = dayjs(ds)
+    const iso = d.day() === 0 ? 7 : d.day()
+    return iso >= 6
+  }).length
+  const weekendPicks = weekendPicksForDates(dates)
+  const toggleWeekend = (days) => {
+    const cur = new Set(value || [])
+    const allOn = days.every((ds) => cur.has(ds))
+    days.forEach((ds) => (allOn ? cur.delete(ds) : cur.add(ds)))
+    emit([...cur])
+  }
+
+  const first = view.startOf('month')
+  const offset = (first.day() === 0 ? 7 : first.day()) - 1
+  const cells = []
+  for (let i = 0; i < offset; i++) cells.push(null)
+  for (let d = 1; d <= view.daysInMonth(); d++) cells.push(first.date(d))
+  while (cells.length % 7 !== 0) cells.push(null)
+
+  return (
+    <div className="cal-wrap">
+      <div className="cal-head">
+        <Button type="text" icon={<ChevronLeftIcon />} aria-label="上个月" disabled={view.isSame(minMonth, 'month')} onClick={() => go(-1)} />
+        <div className="cal-title">{view.format('YYYY年M月')}</div>
+        <Button type="text" icon={<ChevronRightIcon />} aria-label="下个月" disabled={!sorted.length || view.isSame(maxMonth, 'month')} onClick={() => go(1)} />
+      </div>
+      <div className="cal-week" aria-hidden="true">
+        {WEEK_LABELS.map((w, i) => <div key={w} className={i >= 5 ? 'cal-week-end' : undefined}>{w}</div>)}
+      </div>
+      <div className="cal-grid" role="grid" aria-label={`${view.format('YYYY年M月')}，点选要监控的日期`}>
+        {cells.map((d, i) => {
+          if (!d) return <div key={i} className="cal-cell cal-cell-blank" />
+          const ds = d.format('YYYY-MM-DD')
+          const weekend = d.day() === 0 || d.day() === 6
+          const can = allowed.has(ds) && !(after && ds <= after)
+          const on = selected.has(ds)
+          return (
+            <button
+              key={ds}
+              type="button"
+              className={`cal-cell${weekend ? ' cal-cell-weekend' : ''}${can ? ' cal-cell-pick' : ' cal-cell-locked'}${on ? ' cal-cell-picked' : ''}${d.isSame(now, 'day') ? ' cal-cell-today' : ''}`}
+              disabled={!can}
+              aria-pressed={on}
+              aria-label={`${d.format('M月D日')}${weekend ? ' 周末' : ''}${can ? (on ? ' 已选' : ' 可选') : ' 不可选'}`}
+              onClick={() => toggle(ds)}
+            >
+              <span className="cal-num">{d.date()}</span>
+              {on && <span className="cal-check" aria-hidden="true" />}
+            </button>
+          )
+        })}
+      </div>
+      {!single && weekendPicks.length > 0 && (
+        <div className="cal-quick">
+          <span>最近周末</span>
+          {weekendPicks.map((pick) => {
+            const on = pick.days.every((ds) => selected.has(ds))
+            return (
+              <Button key={pick.key} size="small" type={on ? 'primary' : 'default'} onClick={() => toggleWeekend(pick.days)}>
+                {pick.label}
+              </Button>
+            )
+          })}
+        </div>
+      )}
+      <div className="cal-legend">
+        {single ? (
+          <span>{value ? `已选 ${monitorDayLabel(value)}` : '点一天'}</span>
+        ) : (
+          <>
+            <span>已选 {value?.length || 0} 天，其中周六日 {weekendCount} 天</span>
+            <Button size="small" type="default" onClick={() => emit([...(value || []), ...weekendsOf(true)])}>本月周六日</Button>
+            <Button size="small" type="default" onClick={() => emit([...(value || []), ...weekendsOf(false)])}>全部周六日</Button>
+            <Button size="small" type="text" onClick={() => emit([])}>清空</Button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const FLIGHT_RECENT_KEY = 'hna-flight-query-recent'
+
+function loadFlightRecent() {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(FLIGHT_RECENT_KEY) || '[]')
+    if (!Array.isArray(raw)) return []
+    const seen = new Set()
+    return raw.filter((item) => {
+      if (!item || !(item.from || item.to)) return false
+      const key = recentKey(item)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    }).slice(0, 6)
+  } catch (e) {
+    return []
+  }
+}
+
+/* 历史里既有「深圳」也有「深圳（SZX）·深圳宝安国际」，按城市名归并 */
+function recentKey(item) {
+  return `${cityNameOf(item.from)}|${cityNameOf(item.to)}|${item.product || 'all'}`
+}
+
+function recentLabel(item) {
+  const product = item.product && item.product !== 'all' ? ` · ${item.product}` : ''
+  return `${cityNameOf(item.from) || '任意出发'} → ${cityNameOf(item.to) || '任意到达'}${product}`
+}
+
+function writeFlightRecent(list) {
+  const next = list.filter((item) => item && (item.from || item.to)).slice(0, 6)
+  try { window.localStorage.setItem(FLIGHT_RECENT_KEY, JSON.stringify(next)) } catch (e) { /* ignore */ }
+  return next
+}
+
+function saveFlightRecent(from, to, product) {
+  const item = { from: from || '', to: to || '', product: product || 'all' }
+  if (!item.from && !item.to) return loadFlightRecent()
+  const key = recentKey(item)
+  const current = loadFlightRecent()
+  if (current.some((row) => recentKey(row) === key)) return current
+  return writeFlightRecent([item, ...current])
+}
+
+function removeFlightRecent(item) {
+  const key = recentKey(item)
+  return writeFlightRecent(loadFlightRecent().filter((row) => recentKey(row) !== key))
+}
+
+function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightDetail }) {
   const [form] = Form.useForm()
+  const [recent, setRecent] = useState(() => loadFlightRecent())
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
   const [errMsg, setErrMsg] = useState('')
@@ -1956,9 +4506,64 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
   const [seatsInfo, setSeatsInfo] = useState(null) // 实时余票/舱位（按档位）
   const [calRec, setCalRec] = useState(null)
   // 前端查价频控锁（防风控）：发起查价后锁定 priceQuery.min_interval 秒，避免连点
-  const [priceLockUntil, setPriceLockUntil] = useState(0)
+  const priceLockRef = useRef(0)
+  const [seatBusy, setSeatBusy] = useState(false)
   // 出发/到达联动选项（基于当前筛选条件可搜到的航线两端城市）
   const [linkOpts, setLinkOpts] = useState({ from: [], to: [] })
+  const [queryKind, setQueryKind] = useState('weekend')
+  const [weekendOrigins, setWeekendOrigins] = useState([])
+  const [routeOrigins, setRouteOrigins] = useState([])
+  const [routeOriginOpen, setRouteOriginOpen] = useState(false)
+  const [weekendLeave, setWeekendLeave] = useState('none')
+  const [weekendPattern, setWeekendPattern] = useState('fri')
+  const [weekendPick, setWeekendPick] = useState(WEEKEND_RECOMMEND_FROM)
+  const [weekendDates, setWeekendDates] = useState(null)
+  const [customCalOpen, setCustomCalOpen] = useState(false)
+  const [weekendCards, setWeekendCards] = useState(null)
+  const [weekendMeta, setWeekendMeta] = useState(null)
+  const [watchCityKey, setWatchCityKey] = useState('')
+  const [reachFilter, setReachFilter] = useState('all')
+  const [originOpen, setOriginOpen] = useState(false)
+  const [weekendView, setWeekendView] = useState('list')
+  const [onewayView, setOnewayView] = useState('list')
+  const [onewayCity, setOnewayCity] = useState('')
+  const [onewayTrip, setOnewayTrip] = useState('all')
+  const [originRecent, setOriginRecent] = useState(loadOriginRecent)
+  const originDefaulted = useRef(false)
+  const routeOriginDefaulted = useRef(false)
+  // 周末雷达的出发地候选取全量出发城市，不受往返/单程表单里的出发地、到达地筛选影响
+  const [allOrigins, setAllOrigins] = useState([])
+  useEffect(() => {
+    api.flightOptions({}).then((r) => setAllOrigins(r.from_options || [])).catch(() => {})
+  }, [])
+  useEffect(() => {
+    if (originDefaulted.current) return
+    setWeekendOrigins((prev) => {
+      if (prev.length) {
+        originDefaulted.current = true
+        return prev
+      }
+      const label = allOrigins.find((item) => cityNameOf(item) === '深圳')
+      if (!label) return prev
+      originDefaulted.current = true
+      return [label]
+    })
+  }, [allOrigins])
+  useEffect(() => {
+    if (routeOriginDefaulted.current) return
+    setRouteOrigins((prev) => {
+      if (prev.length) {
+        routeOriginDefaulted.current = true
+        return prev
+      }
+      if (!allOrigins.length) return prev
+      const last = loadFlightRecent()[0]
+      const label = matchOriginLabel(allOrigins, last?.from) || allOrigins.find((item) => cityNameOf(item) === '深圳')
+      if (!label) return prev
+      routeOriginDefaulted.current = true
+      return [label]
+    })
+  }, [allOrigins])
   // 结果行勾选（批量转监控）与弹窗状态
   const [selKeys, setSelKeys] = useState([])
   const [batchOpen, setBatchOpen] = useState(false)
@@ -1969,14 +4574,27 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
   const [batchTier, setBatchTier] = useState([]) // 档位条件多选白名单：666/2666/66666；空数组=不限（全部档位）
   const [batchSummary, setBatchSummary] = useState(null)
   const [batchMode, setBatchMode] = useState('single') // 弹窗标题模式：single=转为监控任务 / batch=批量转为监控任务
+  const [roundTrip, setRoundTrip] = useState(false)
+  const [roundBusy, setRoundBusy] = useState(false)
   // 「未选日期」提示：用户可关闭，下次查询（重新触发该逻辑）时再出现
   const [dateWarnDismissed, setDateWarnDismissed] = useState(false)
   // 冻结查询列：开启时固定首列（航班号）+ 后四列（原价/优惠价/余票舱位/操作），横向滚动时仍可见
   // 默认不冻结（用户手动开启）
   const [freezeQuery, setFreezeQuery] = useState(false)
+  const queryCardRef = useRef(null)
+
+  // 默认停在周末雷达，它的「目的地」与往返/单程共用 to 字段：首屏不回填到达地，切到往返/单程时再补
+  useEffect(() => {
+    const last = loadFlightRecent()[0]
+    if (!last) return
+    form.setFieldsValue({ product: last.product || 'all' })
+  }, [form])
 
   const watch = Form.useWatch([], form)
   const dateMode = (watch && watch.dateMode) || 'none'
+  useEffect(() => {
+    if (queryKind === 'round' && dateMode !== 'range') form.setFieldsValue({ dateMode: 'range' })
+  }, [queryKind, dateMode, form])
   // 「只能查/显示当天及以后」：日期选择器禁过去；转监控弹窗的日期池同样剔除过去日期
   const todayStr = dayjs().format('YYYY-MM-DD')
   const todayDisabled = (d) => d.isBefore(dayjs(), 'day')
@@ -1985,7 +4603,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
   useEffect(() => {
     if (!watch) return undefined
     const timer = setTimeout(() => {
-      const from = String(watch.from || '').trim()
+      const from = routeOrigins.length === 1 ? String(routeOrigins[0] || '').trim() : ''
       const to = String(watch.to || '').trim()
       let date = ''
       let date_start = ''
@@ -1995,40 +4613,193 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
         date_start = watch.dateRange[0].format('YYYY-MM-DD')
         date_end = watch.dateRange[1].format('YYYY-MM-DD')
       }
-      api.flightOptions({
-        from: from ? cityNameOf(from) : '',
+      const params = {
         to: to ? cityNameOf(to) : '',
         product: watch.product === 'all' ? '' : watch.product,
         date,
         date_start,
         date_end,
-      }).then((r) => {
-        const next = { from: r.from_options || [], to: r.to_options || [] }
+      }
+      // 出发地候选不能被已选出发地收窄，否则选过一个城市后选择器里只剩它自己
+      Promise.all([
+        api.flightOptions({ ...params, from: from ? cityNameOf(from) : '' }),
+        from ? api.flightOptions({ ...params, from: '' }) : null,
+      ]).then(([r, all]) => {
+        const next = { from: (all || r).from_options || [], to: r.to_options || [] }
         // 当前已选值若不在返回选项里（如手输三字码），并入以避免选中值消失
-        if (from && !next.from.includes(from)) next.from = [from, ...next.from]
+        for (const label of routeOrigins) {
+          if (label && !next.from.includes(label)) next.from = [label, ...next.from]
+        }
         if (to && !next.to.includes(to)) next.to = [to, ...next.to]
         setLinkOpts(next)
       }).catch(() => {})
     }, 250)
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [watch])
+  }, [watch, routeOrigins])
 
   const optProps = (list) => ({
     showSearch: true,
     allowClear: true,
-    // 下拉与选中显示完整「城市（IATA）·机场」，城市/三字码/机场名均可模糊搜到
-    options: list.map((v) => ({ value: v, label: v })),
+    // 只显示城市名；搜索仍匹配完整「城市（IATA）·机场」，三字码/机场名也能搜到
+    options: list.map((v) => ({ value: v, label: cityNameOf(v) || v })),
     filterOption: (input, opt) => {
       const q = String(input || '').toUpperCase().trim()
-      return String(opt.label ?? opt.value).toUpperCase().includes(q)
+      return String(opt.value ?? opt.label).toUpperCase().includes(q)
     },
     notFoundContent: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前条件下没有可联动城市" />,
   })
 
-  const submit = async (values) => {
-    const from = String(values.from || '').trim()
+  const scanWeekend = async (patternKey, planIndex, values, originOverride, dateOverride) => {
+    const origins = (originOverride || weekendOrigins).slice(0, WEEKEND_ORIGIN_LIMIT)
     const to = String(values.to || '').trim()
+    const pattern = WEEKEND_PATTERNS.find((item) => item.key === patternKey) || WEEKEND_PATTERNS[0]
+    const plan = findWeekendPlan(planIndex)
+    setErrMsg('')
+    setWeekendCards(null)
+    setWeekendMeta(null)
+    if (!origins.length) {
+      setErrMsg('周末雷达至少选一个出发地，最多 5 个。目的地可以不选。')
+      return
+    }
+    if (!plan) {
+      setErrMsg('没有可推荐的周末。')
+      return
+    }
+    const chosen = dateOverride?.out && dateOverride?.back
+      ? dateOverride
+      : (pattern.key === 'custom' && weekendDates?.out && weekendDates?.back ? weekendDates : null)
+    if (pattern.key === 'custom' && !chosen) {
+      setErrMsg('自选日期要先点完去程和返程。')
+      return
+    }
+    setLoading(true)
+    try {
+      const outDate = chosen?.out || plan[pattern.outDay].format('YYYY-MM-DD')
+      const backDate = chosen?.back || plan[pattern.backDay || 'sun'].format('YYYY-MM-DD')
+      const span = staySpanLabel(outDate, backDate)
+      const product = values.product === 'all' ? '' : (values.product || '')
+      const lists = await Promise.all(origins.map(async (label) => {
+        const city = cityNameOf(label)
+        const outQuery = { from: city, date: outDate, product, limit: 2000 }
+        const backQuery = { to: city, date: backDate, product, limit: 2000 }
+        if (to) {
+          outQuery.to = cityNameOf(to)
+          backQuery.from = cityNameOf(to)
+        }
+        const [outbound, inbound] = await Promise.all([
+          api.flightQuery(outQuery),
+          api.flightQuery(backQuery),
+        ])
+        return pairWeekendCities(outbound.records, inbound.records, pattern).map((card) => ({
+          ...card,
+          fromCity: city,
+          fromLabel: label,
+          leave: pattern.leave,
+          badge: pattern.key === 'custom' && span ? span : pattern.badge,
+          outDate,
+          backDate,
+        }))
+      }))
+      const cards = lists.flat().sort((a, b) => (
+        pairScore(b.outs[0], b.backs[0]) - pairScore(a.outs[0], a.backs[0])
+        || a.fromCity.localeCompare(b.fromCity, 'zh')
+        || a.city.localeCompare(b.city, 'zh')
+      ))
+      setWeekendCards(cards)
+      setWeekendMeta({ title: pattern.title, outDate, backDate, span, origins: origins.map(cityNameOf) })
+      setRecent(saveFlightRecent(origins[0], to, values.product || 'all'))
+    } catch (e) {
+      setErrMsg(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const reservePriceQuery = async () => {
+    const pq = priceQuery || {}
+    if (pq.enabled === false) throw new Error('实时查价已关闭（防风控），可在「监控管理」重新开启。')
+    const interval = Math.max(8, Number(pq.min_interval) || 8) * 1000
+    const wait = priceLockRef.current - Date.now()
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait))
+    priceLockRef.current = Date.now() + interval
+  }
+
+  const readWeekendSeat = (payload, flightNo) => {
+    if (payload?.disabled) {
+      return { plusNote: payload.prices?.plus?.note || '实时查价已关闭' }
+    }
+    const want = String(flightNo || '').replace(/\s+/g, '').toUpperCase()
+    const pick = (map) => {
+      if (!map) return null
+      if (map[flightNo]) return map[flightNo]
+      const key = Object.keys(map).find((item) => item.replace(/\s+/g, '').toUpperCase() === want)
+      return key ? map[key] : null
+    }
+    const plus = pick(payload?.seats?.plus)
+    const normal = pick(payload?.seats?.normal)
+    const plusPrice = pick(payload?.prices?.plus?.prices)
+    return {
+      plusSeats: plus ? plus.seats : null,
+      plusCabins: plus?.cabins || [],
+      plusPrice: plusPrice == null ? null : Number(plusPrice),
+      plusNote: payload?.prices?.plus?.note || '',
+      normalSeats: normal ? normal.seats : null,
+    }
+  }
+
+  const checkWeekendSeats = async (flight, date) => {
+    if (!flight?.origin?.iata || !flight?.dest?.iata) throw new Error('这班缺少机场三字码，没法查余票。')
+    await reservePriceQuery()
+    let payload
+    try {
+      payload = await api.flightPrices({ from: flight.origin.iata, to: flight.dest.iata, date })
+    } catch (err) {
+      if (!(err.status === 429 && err.retry_after)) throw err
+      priceLockRef.current = Date.now() + err.retry_after * 1000
+      await new Promise((resolve) => setTimeout(resolve, err.retry_after * 1000))
+      await reservePriceQuery()
+      payload = await api.flightPrices({ from: flight.origin.iata, to: flight.dest.iata, date })
+    }
+    return readWeekendSeat(payload, flight.flight_no)
+  }
+
+  const followWeekend = async (card) => {
+    const items = [
+      ...card.outs.map((flight) => ({ flight, date: card.outDate })),
+      ...card.backs.map((flight) => ({ flight, date: card.backDate })),
+    ].map(({ flight, date }) => ({
+      from_code: flight.origin?.iata,
+      to_code: flight.dest?.iata,
+      dates: [date],
+      product: flight.product,
+      flight_no: flight.flight_no,
+      dep_time: flight.dep_time,
+      arr_time: flight.arr_time,
+    }))
+    setWatchCityKey(`${card.fromCity}|${card.city}`)
+    try {
+      const r = await api.addTasksBatch(items)
+      const go = card.outs[0]
+      const back = card.backs[0]
+      msg.success(`已关注 ${card.city}：${go?.flight_no || '去程'} ${card.outDate}，${back?.flight_no || '返程'} ${card.backDate}`)
+      if (onChanged) onChanged()
+    } catch (e) {
+      msg.error(e.message)
+    } finally {
+      setWatchCityKey('')
+    }
+  }
+
+  const submit = async (values, originOverride, kindOverride, detailFlights) => {
+    const kind = kindOverride || queryKind
+    const origins = (originOverride || routeOrigins).slice(0, WEEKEND_ORIGIN_LIMIT)
+    const from = origins[0] ? cityNameOf(origins[0]) : ''
+    const to = String(values.to || '').trim()
+    if (kind === 'weekend') {
+      await scanWeekend(weekendPattern, weekendPick, values)
+      return
+    }
     setLoading(true)
     setErrMsg('')
     setResult(null)
@@ -2040,33 +4811,81 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
     setSelKeys([])
     setDateWarnDismissed(false)
     try {
+      if (!origins.length) {
+        setErrMsg('至少选一个出发地，最多 5 个。')
+        return
+      }
       const queryParams = {
-        from: from ? cityNameOf(from) : '',
         to: to ? cityNameOf(to) : '',
         product: values.product === 'all' ? '' : values.product,
         flight_no: String(values.flight_no || '').trim(),
       }
-      if (values.dateMode === 'single' && values.date) queryParams.date = values.date.format('YYYY-MM-DD')
+      if (kind === 'round') {
+        if (!to) {
+          setErrMsg('往返查询需要选择到达地。出发地可以多选。')
+          return
+        }
+        if (values.dateRange && values.dateRange.length === 2) {
+          queryParams.date_start = values.dateRange[0].format('YYYY-MM-DD')
+          queryParams.date_end = values.dateRange[1].format('YYYY-MM-DD')
+        }
+      } else if (values.dateMode === 'single' && values.date) queryParams.date = values.date.format('YYYY-MM-DD')
       else if (values.dateMode === 'range' && values.dateRange && values.dateRange.length === 2) {
         queryParams.date_start = values.dateRange[0].format('YYYY-MM-DD')
         queryParams.date_end = values.dateRange[1].format('YYYY-MM-DD')
       }
-      const r = await api.flightQuery(queryParams)
-      setResult(r)
+      if (kind === 'oneway' && !to) queryParams.limit = 2000
+      setOnewayCity('')
+      const wantRound = kind === 'round'
+      const batches = await Promise.all(origins.map(async (label) => {
+        const fromCity = cityNameOf(label)
+        const outbound = await api.flightQuery({ ...queryParams, from: fromCity })
+        let records = (outbound.records || []).map((rec) => ({ ...rec, leg: wantRound ? 'out' : '' }))
+        let returns = []
+        if (kind === 'oneway') {
+          const backParams = { to: fromCity, product: queryParams.product, limit: 2000 }
+          if (queryParams.to) backParams.from = queryParams.to
+          if (queryParams.date_start && queryParams.date_end) {
+            backParams.date_start = queryParams.date_start
+            backParams.date_end = queryParams.date_end
+          }
+          const back = await api.flightQuery(backParams)
+          returns = back.records || []
+        }
+        if (wantRound) {
+          const backParams = { ...queryParams, from: queryParams.to, to: fromCity }
+          delete backParams.flight_no
+          const back = await api.flightQuery(backParams)
+          records = records.concat((back.records || []).map((rec) => ({ ...rec, leg: 'back' })))
+        }
+        return { records, returns }
+      }))
+      let records = batches.flatMap((batch) => batch.records)
+      const returns = batches.flatMap((batch) => batch.returns)
+      if (detailFlights && (detailFlights.out || detailFlights.back)) {
+        records = records.filter((rec) => {
+          if (rec.leg === 'back') return !detailFlights.back || rec.flight_no === detailFlights.back
+          return !detailFlights.out || rec.flight_no === detailFlights.out
+        })
+      }
+      let saved = loadFlightRecent()
+      origins.forEach((label) => { saved = saveFlightRecent(label, to, values.product || 'all') })
+      setRecent(saved)
+      setResult({ ok: true, records, returns, count: records.length, round: wantRound })
       // 仅单日查询时并行查当日低价（原价/优惠价）；区间/不限日期不自动查价
-      const singleDate = queryParams.date
-      if (from && to && singleDate) {
+      const singleDate = kind === 'oneway' ? queryParams.date : ''
+      if (origins.length === 1 && from && to && singleDate) {
         const pq = priceQuery || {}
         const interval = Math.max(2, Number(pq.min_interval) || 8)
         const now = Date.now()
         setPriceTried(true)
         if (pq.enabled === false) {
           setErrMsg('实时查价已关闭（防风控），航班信息仍可查询；可在「监控管理」重新开启。')
-        } else if (priceLockUntil > now) {
-          const remain = Math.ceil((priceLockUntil - now) / 1000)
+        } else if (priceLockRef.current > now) {
+          const remain = Math.ceil((priceLockRef.current - now) / 1000)
           setErrMsg(`实时查价过于频繁，请 ${remain} 秒后再试（防风控）。`)
         } else {
-          setPriceLockUntil(now + interval * 1000)
+          priceLockRef.current = now + interval * 1000
           setPriceLoading(true)
           try {
             const p = await api.flightPrices({ from: cityNameOf(from), to: cityNameOf(to), date: singleDate })
@@ -2080,7 +4899,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
             }
           } catch (e) {
             if (e.status === 429 && e.retry_after) {
-              setPriceLockUntil(Date.now() + e.retry_after * 1000)
+              priceLockRef.current = Date.now() + e.retry_after * 1000
             }
             setErrMsg(e.message)
           } finally {
@@ -2095,52 +4914,123 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
     }
   }
 
-  // 按「航线+航班号+起降时刻」分组生成弹窗清单：同一天内多个起飞时间的航班各自成组
-  const openBatch = (keys) => {
-    const recs = (result?.records || []).filter((_, i) => keys.includes(i))
-    if (!recs.length) return
-    const groups = []
-    const idx = {}
-    const searchFrom = watch ? form.getFieldValue('date') || null : null
-    const searchRange = watch?.dateMode === 'range' && watch.dateRange ? watch.dateRange : null
-    for (const r of recs) {
-      const gkey = `${r.origin.city}|${r.dest.city}|${r.flight_no || ''}|${r.dep_time || ''}|${r.arr_time || ''}`
-      if (!(gkey in idx)) {
-        idx[gkey] = groups.length
-        groups.push({
-          key: gkey,
-          from_city: r.origin.city,
-          from_iata: r.origin.iata,
-          to_city: r.dest.city,
-          to_iata: r.dest.iata,
-          flight_no: r.flight_no || '',
-          dep_time: r.dep_time || '',
-          arr_time: r.arr_time || '',
-          product: new Set(),
-          dates: [],
-          rows: [],
-        })
-      }
-      const g = groups[idx[gkey]]
-      for (const p of String(r.product || '').split('/')) if (p) g.product.add(p)
-      g.rows.push(r)
-    }
-    for (const g of groups) {
-      g.product = [...g.product].sort().join('/')
-      // 只保留班期日历里可兑换的日期（区间 + 班期匹配，与 ScheduleCalendar 判定一致），
-      // 并按档位剔除产品规则禁用的日期（tier_block_rules，如 666 档十一/五一/暑运不可用）
-      g.dates = filterTierDates(expandRecordDates(g.rows), g.product, tierBlockRules).filter((d) => d >= todayStr)
-      // prefill 搜索日期：单日选该日，区间选区间内的可飞日期
+  const openedDetail = useRef('')
+  useEffect(() => {
+    const req = flightDetail
+    if (!req?.id || openedDetail.current === req.id) return
+    openedDetail.current = req.id
+    const round = !!(req.round && req.outDate && req.backDate)
+    const values = round
+      ? {
+          to: req.to,
+          flight_no: '',
+          product: 'all',
+          dateMode: 'range',
+          dateRange: [dayjs(req.outDate), dayjs(req.backDate)],
+        }
+      : {
+          to: req.to,
+          flight_no: req.flightNo || '',
+          product: 'all',
+          dateMode: 'single',
+          date: dayjs(req.date),
+        }
+    setQueryKind(round ? 'round' : 'oneway')
+    setOnewayView('list')
+    setRouteOrigins([req.from])
+    routeOriginDefaulted.current = true
+    form.setFieldsValue(values)
+    submit(values, [req.from], round ? 'round' : 'oneway', round ? { out: req.outFlight, back: req.backFlight } : null)
+    queryCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [flightDetail])
+
+  const flightGroups = useMemo(() => groupFlightRecords(result?.records || []), [result])
+  const onewayCards = useMemo(
+    () => (queryKind === 'oneway' && result && !result.round ? onewayReachCards(result.records, result.returns) : []),
+    [queryKind, result],
+  )
+  const onewayCardByPair = useMemo(
+    () => new Map(onewayCards.map((card) => [`${card.fromCity}|${card.city}`, card])),
+    [onewayCards],
+  )
+  const visibleGroups = useMemo(() => {
+    if (queryKind !== 'oneway' || result?.round) return flightGroups
+    const cityKind = new Map(onewayCards.map((card) => [`${card.fromCity}|${card.city}`, reachKindOf(card, 'oneway')]))
+    const cityTrip = new Map(onewayCards.map((card) => [`${card.fromCity}|${card.city}`, card.trip]))
+    return flightGroups.filter((group) => {
+      const key = `${group.origin?.city}|${group.dest?.city}`
+      if (onewayCity && group.dest?.city !== onewayCity) return false
+      if (onewayTrip !== 'all' && cityTrip.get(key) !== onewayTrip) return false
+      if (reachFilter === 'all') return true
+      return cityKind.get(key) === reachFilter
+    })
+  }, [flightGroups, queryKind, result, onewayCards, onewayCity, onewayTrip, reachFilter])
+
+  const groupsFromRecords = (recs, direction) => {
+    const searchFrom = queryKind === 'oneway' && watch?.dateMode === 'single' ? (form.getFieldValue('date') || null) : null
+    const searchRange = (queryKind === 'round' || watch?.dateMode === 'range') && watch?.dateRange?.length === 2 ? watch.dateRange : null
+    return recordsToMonitorGroups(recs, tierBlockRules, todayStr).map((g) => {
+      let selected = []
       if (searchRange) {
         const [a, b] = searchRange
-        g.selected = g.dates.filter((d) => d >= a.format('YYYY-MM-DD') && d <= b.format('YYYY-MM-DD'))
+        selected = g.dates.filter((d) => d >= a.format('YYYY-MM-DD') && d <= b.format('YYYY-MM-DD'))
       } else if (searchFrom) {
         const ds = searchFrom.format('YYYY-MM-DD')
-        g.selected = g.dates.includes(ds) ? [ds] : []
-      } else {
-        g.selected = []
+        selected = g.dates.includes(ds) ? [ds] : []
+      }
+      return { ...g, key: `${direction}|${g.key}`, direction, selected }
+    })
+  }
+
+  const recordsForKeys = (keys) => {
+    const wanted = new Set(keys)
+    const recs = []
+    for (const group of flightGroups) {
+      if (wanted.has(group.key)) {
+        recs.push(...group.segments)
+        continue
+      }
+      for (const seg of group.segments) {
+        if (wanted.has(segmentKey(seg))) recs.push(seg)
       }
     }
+    return recs
+  }
+
+  const pairRoundSelection = (recs) => {
+    const all = result?.records || []
+    const outSelected = recs.filter((rec) => rec.leg !== 'back')
+    const backSelected = recs.filter((rec) => rec.leg === 'back')
+    const sameCity = (a, b) => a?.origin?.city && a.origin.city === b?.dest?.city && a.dest?.city === b?.origin?.city
+    const out = outSelected.length
+      ? outSelected
+      : all.filter((rec) => rec.leg !== 'back' && backSelected.some((back) => sameCity(rec, back)))
+    const back = backSelected.length
+      ? backSelected
+      : all.filter((rec) => rec.leg === 'back' && out.some((outbound) => sameCity(outbound, rec)))
+    return { out, back }
+  }
+
+  // 按「航线+航班号+起降时刻」分组生成弹窗清单：同一天内多个起飞时间的航班各自成组
+  const openBatch = (keys) => {
+    const recs = recordsForKeys(keys)
+    if (!recs.length) return
+    let groups = []
+    let followBoth = false
+    if (result?.round) {
+      const paired = pairRoundSelection(recs)
+      const outGroups = groupsFromRecords(paired.out, 'out')
+      const backGroups = groupsFromRecords(paired.back, 'back')
+      followBoth = backGroups.length > 0
+      groups = followBoth ? withReturnSuggestions([...outGroups, ...backGroups]) : outGroups
+      if (!outGroups.length && backGroups.length) {
+        groups = backGroups.map((group) => ({ ...group, checked: group.selected.length > 0 }))
+        followBoth = true
+      }
+    } else {
+      groups = groupsFromRecords(recs, 'out')
+    }
+    setRoundTrip(followBoth)
     setBatchGroups(groups)
     setBatchMinSeats(0)
     setBatchCabins([])
@@ -2148,8 +5038,62 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
     setBatchOpen(true)
   }
 
+  const toggleRoundTrip = async (checked) => {
+    if (!checked) {
+      setRoundTrip(false)
+      setBatchGroups((prev) => prev.filter((g) => g.direction !== 'back'))
+      return
+    }
+    const outbound = batchGroups.filter((g) => g.direction !== 'back')
+    const pairs = []
+    const seen = new Set()
+    for (const g of outbound) {
+      const key = `${g.to_city}|${g.from_city}`
+      if (seen.has(key) || !g.from_city || !g.to_city) continue
+      seen.add(key)
+      pairs.push(g)
+    }
+    if (!pairs.length) return
+    if (result?.round) {
+      const wanted = new Set(pairs.map((g) => `${g.to_city}|${g.from_city}`))
+      const known = (result.records || []).filter((rec) => rec.leg === 'back' && wanted.has(`${rec.origin?.city}|${rec.dest?.city}`))
+      if (known.length) {
+        setRoundTrip(true)
+        setBatchGroups(withReturnSuggestions([...outbound, ...groupsFromRecords(known, 'back')]))
+        return
+      }
+    }
+    setRoundBusy(true)
+    try {
+      const product = form.getFieldValue('product')
+      const extras = []
+      for (const g of pairs) {
+        const r = await api.flightQuery({
+          from: g.to_city,
+          to: g.from_city,
+          product: !product || product === 'all' ? '' : product,
+          limit: 300,
+        })
+        extras.push(...groupsFromRecords(r.records || [], 'back'))
+      }
+      if (!extras.length) {
+        msg.info('没有找到回程航班。')
+        setRoundTrip(false)
+        return
+      }
+      setRoundTrip(true)
+      setBatchGroups(withReturnSuggestions([...outbound, ...extras]))
+    } catch (e) {
+      msg.error(e.message)
+      setRoundTrip(false)
+    } finally {
+      setRoundBusy(false)
+    }
+  }
+
   const confirmBatch = async () => {
     const items = batchGroups
+      .filter((g) => g.direction !== 'back' || g.checked)
       .filter((g) => g.dates.length)
       .map((g) => {
         const row = g.rows[0] || {}
@@ -2189,25 +5133,49 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
     }
   }
 
-  const goMonitor = (rec, index) => {
+  const goMonitor = (seg) => {
+    const key = segmentKey(seg)
     setBatchMode('single')
-    setSelKeys([index])
-    openBatch([index])
+    setSelKeys([key])
+    openBatch([key])
   }
 
+  const preferDay = watch && watch.dateMode === 'single' && watch.date ? watch.date : null
+
   const columns = [
-    { title: '航班号', dataIndex: 'flight_no', width: 110, fixed: freezeQuery ? 'left' : undefined, render: (v) => <span className="mono">{v}</span> },
+    {
+      title: '航班号', dataIndex: 'flight_no', width: result?.round ? 168 : 110, fixed: freezeQuery || isPhone() ? 'left' : undefined,
+      render: (v, g) => {
+        const phone = isPhone()
+        const block = phone ? scheduleBlocks(g.segments)[0] : null
+        const seg = block?.record
+        const day = seg ? operatedDay(seg, preferDay) : ''
+        return (
+        <Space size={4} direction={phone ? 'vertical' : 'horizontal'}>
+          <Space size={4}>
+            {result?.round && (
+              <Tag color={g.leg === 'back' ? 'blue' : 'gold'} style={{ marginInlineEnd: 0 }}>{g.leg === 'back' ? '回程' : '去程'}</Tag>
+            )}
+            <span className="mono">{v}</span>
+          </Space>
+          {seg ? (
+            <Button size="small" type="link" style={{ padding: 0, height: 'auto' }} onClick={() => openHnaApp(seg, day, msg)}>打开 App</Button>
+          ) : null}
+        </Space>
+        )
+      },
+    },
     { title: '航司', dataIndex: 'carrier', width: 90 },
     {
       title: '出发', key: 'origin', width: 170,
-      render: (_, r) => {
-        const rt = timesMap?.[r.flight_no]
-        const term = r.origin?.terminal || rt?.dep_terminal
+      render: (_, g) => {
+        const rt = timesMap?.[g.flight_no]
+        const term = g.origin?.terminal || rt?.dep_terminal
         return (
           <Space direction="vertical" size={0}>
-            <span>{cityWithProvince(r.origin.city)}</span>
+            <span>{cityWithProvince(g.origin.city)}</span>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {r.origin.iata} · {(r.origin.airport || '').replace('机场', '')}
+              {g.origin.iata} · {(g.origin.airport || '').replace('机场', '')}
               {term ? ` · ${term}` : ''}
             </Typography.Text>
           </Space>
@@ -2216,16 +5184,35 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
     },
     {
       title: '到达', key: 'dest', width: 170,
-      render: (_, r) => {
-        const stop = stopsInfo?.[r.flight_no]
+      render: (_, g) => {
+        const stop = stopsInfo?.[g.flight_no]
         const isStopover = !!(stop && stop.kind === 'stopover')
-        const rt = timesMap?.[r.flight_no]
-        const term = r.dest?.terminal || rt?.arr_terminal
+        const rt = timesMap?.[g.flight_no]
+        const term = g.dest?.terminal || rt?.arr_terminal
         return (
           <Space direction="vertical" size={0}>
-            <span>{cityWithProvince(r.dest.city)}{isStopover && <Tag color="orange" style={{ marginLeft: 6 }}>经</Tag>}</span>
+            <span>
+              {cityWithProvince(g.dest.city)}
+              {isStopover && <Tag color="orange" style={{ marginLeft: 6 }}>经</Tag>}
+              {(() => {
+                const card = !result?.round && onewayCardByPair.get(`${g.origin?.city}|${g.dest?.city}`)
+                if (!card || card.trip !== 'round') return null
+                const byFlight = new Map()
+                for (const rec of card.backs) {
+                  const times = byFlight.get(rec.flight_no) || new Set()
+                  times.add(rec.dep_time || '--:--')
+                  byFlight.set(rec.flight_no, times)
+                }
+                const backs = [...byFlight].map(([no, times]) => `${no} ${[...times].join('/')}`)
+                return (
+                  <Tooltip title={`回程 ${g.dest.city}→${g.origin.city}：${backs.slice(0, 6).join('、')}${backs.length > 6 ? ` 等 ${backs.length} 班` : ''}`}>
+                    <Tag color="green" className="round-ok-tag">可凑往返</Tag>
+                  </Tooltip>
+                )
+              })()}
+            </span>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {r.dest.iata} · {(r.dest.airport || '').replace('机场', '')}
+              {g.dest.iata} · {(g.dest.airport || '').replace('机场', '')}
               {term ? ` · ${term}` : ''}
             </Typography.Text>
           </Space>
@@ -2233,23 +5220,38 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
       },
     },
     {
-      title: '起飞', dataIndex: 'dep_time', width: 80,
-      render: (v, r) => {
-        const rt = timesMap?.[r.flight_no]
-        return <span className="mono">{rt?.dep || v || '—'}</span>
-      },
+      title: '班期', key: 'segments', width: 440,
+      render: (_, g) => (
+        <div className="sched">
+          {scheduleBlocks(g.segments).map((block) => {
+            const rt = timesMap?.[block.record.flight_no]
+            const dep = (rt?.dep && rt.dep === block.record.dep_time) ? rt.dep : (block.record.dep_time || '—')
+            const arr = (rt?.arr && rt.dep === block.record.dep_time) ? rt.arr : (block.record.arr_time || '')
+            const nextDay = arr && dep !== '—' && arr < dep
+            const winter = block.seasons.includes('冬春航班')
+            return (
+              <div key={`${block.record.dep_time}|${block.dateText}`} className="sched-row">
+                <span className={`sched-season${winter ? ' is-winter' : ''}`}>{winter ? '冬春' : '夏秋'}</span>
+                <span className="sched-time mono">
+                  {dep}<span className="sched-arrow">→</span>{arr || '--:--'}{nextDay && <sup>+1</sup>}
+                </span>
+                <span className="sched-days">{weekDaysText(block.days)}</span>
+                <span className="sched-dates mono">{shortDateText(block.dateText)}</span>
+                <span className="sched-tiers">
+                  {['666', '2666'].filter((p) => block.product.includes(p)).map((p) => (
+                    <span key={p} className={`sched-tier is-${p}`}>{p}</span>
+                  ))}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      ),
     },
     {
-      title: '到达', dataIndex: 'arr_time', width: 80,
-      render: (v, r) => {
-        const rt = timesMap?.[r.flight_no]
-        return <span className="mono">{rt?.arr || v || '—'}</span>
-      },
-    },
-    {
-      title: '经停', key: 'stops', width: 180,
-      render: (_, r) => {
-        const s = stopsInfo?.[r.flight_no]
+      title: '经停', key: 'stops', width: 150,
+      render: (_, g) => {
+        const s = stopsInfo?.[g.flight_no]
         if (!s) return <Typography.Text type="secondary">—</Typography.Text>
         if (s.kind === 'direct') return <Tag color="green">直飞</Tag>
         if (s.kind === 'stopover') {
@@ -2276,30 +5278,11 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
         return <Typography.Text type="secondary">—</Typography.Text>
       },
     },
-    { title: '班期', dataIndex: 'days', width: 120, render: fmtDays },
-    {
-      title: '首班', key: 'first_date', width: 80,
-      render: (_, r) => {
-        const first = Array.isArray(r.effective_dates) && r.effective_dates[0] ? String(r.effective_dates[0][0]) : ''
-        return first ? <span className="mono">{first.slice(5)}</span> : '—'
-      },
-    },
-    { title: '日期', dataIndex: 'effective_dates', width: 180, render: fmtDateRanges },
-    {
-      title: '档位', dataIndex: 'product', width: 130,
-      render: (v) => {
-        const parts = String(v || '').split('/').map((s) => s.trim()).filter(Boolean)
-        if (!parts.length) return <Typography.Text type="secondary">—</Typography.Text>
-        return parts.map((p) => (
-          <Tag key={p} color={p === '666' ? 'gold' : 'purple'} style={{ marginInlineEnd: 4 }}>{p}</Tag>
-        ))
-      },
-    },
     {
       title: '原价', key: 'orig_price', width: 100, fixed: freezeQuery ? 'right' : undefined,
-      render: (_, r) => {
+      render: (_, g) => {
         if (priceLoading) return <Spin size="small" />
-        const v = prices?.normal?.prices?.[r.flight_no]
+        const v = prices?.normal?.prices?.[g.flight_no]
         if (v != null) return <span className="mono">¥{v}</span>
         if (priceTried) return <Typography.Text type="secondary" style={{ fontSize: 12 }}>未查询到</Typography.Text>
         return <Typography.Text type="secondary">—</Typography.Text>
@@ -2307,9 +5290,9 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
     },
     {
       title: '优惠价', key: 'plus_price', width: 100, fixed: freezeQuery ? 'right' : undefined,
-      render: (_, r) => {
+      render: (_, g) => {
         if (priceLoading) return <Spin size="small" />
-        const v = prices?.plus?.prices?.[r.flight_no]
+        const v = prices?.plus?.prices?.[g.flight_no]
         if (v != null) return <span className="mono" style={{ color: 'var(--color-low-price)', fontWeight: 600 }}>¥{v}</span>
         if (priceTried) return <Typography.Text type="secondary" style={{ fontSize: 12 }}>未查询到</Typography.Text>
         return <Typography.Text type="secondary">—</Typography.Text>
@@ -2317,9 +5300,9 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
     },
     {
       title: '余票/舱位', key: 'seats', width: 180, fixed: freezeQuery ? 'right' : undefined,
-      render: (_, r) => {
+      render: (_, g) => {
         if (priceLoading) return <Spin size="small" />
-        const s = seatsInfo?.plus?.[r.flight_no] || seatsInfo?.normal?.[r.flight_no]
+        const s = seatsInfo?.plus?.[g.flight_no] || seatsInfo?.normal?.[g.flight_no]
         if (!s) {
           return priceTried
             ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>未查询到</Typography.Text>
@@ -2344,62 +5327,451 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
       },
     },
     {
-      title: '操作', key: 'op', width: 170, fixed: freezeQuery ? 'right' : undefined,
-      render: (_, r, index) => (
-        <Space size={4} wrap>
-          <Button size="small" icon={<CalendarIcon />} onClick={() => setCalRec(r)}>班期日历</Button>
-          <Button size="small" type="primary" ghost icon={<PlusIcon />} onClick={() => goMonitor(r, index)}>
-            转为监控任务
-          </Button>
-        </Space>
+      title: '操作', key: 'op', width: 270, fixed: freezeQuery ? 'right' : undefined,
+      render: (_, g) => (
+        <div className="sched">
+          {scheduleBlocks(g.segments).map((block) => {
+            const seg = block.record
+            const day = operatedDay(seg, preferDay)
+            return (
+              <div key={`${seg.dep_time}|${block.dateText}`} className="sched-row sched-ops">
+                <Button size="small" icon={<CalendarIcon />} onClick={() => setCalRec(seg)}>班期日历</Button>
+                <Button size="small" type="primary" ghost icon={<PlusIcon />} onClick={() => {
+                  const keys = (block.segments || []).map(segmentKey)
+                  if (!keys.length) {
+                    msg.error('这条班期没有可监控的记录。')
+                    return
+                  }
+                  setBatchMode('single')
+                  setSelKeys(keys)
+                  openBatch(keys)
+                }}>
+                  监控
+                </Button>
+                {isPhone() ? null : (
+                  <Button
+                    size="small"
+                    type="text"
+                    href={officialWebUrl(seg, day, false)}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={`跳到海航官网查询 ${seg.flight_no || ''} ${day}`}
+                  >
+                    跳到官网
+                  </Button>
+                )}
+              </div>
+            )
+          })}
+        </div>
       ),
     },
   ]
 
-  const noDateWarn = result && !(watch && (watch.date || (watch.dateRange && watch.dateRange.length === 2)))
+  const onewayMulti = new Set(onewayCards.map((card) => card.city)).size > 1
+  const hasLiveData = priceLoading || priceTried || !!prices
+  const visibleColumns = columns.filter((col) => {
+    if (['orig_price', 'plus_price', 'seats'].includes(col.key)) return hasLiveData
+    if (col.key === 'stops') return hasLiveData || !!stopsInfo
+    if (col.key === 'origin') return result?.round || queryKind !== 'oneway' || new Set(visibleGroups.map((g) => g.origin?.city)).size > 1
+    return true
+  })
+
+  const pickOnewayDate = (mode, day) => {
+    form.setFieldsValue(mode === 'single' ? { dateMode: 'single', date: day } : { dateMode: mode })
+    if (mode !== 'range' && routeOrigins.length) form.submit()
+  }
+
+  const shiftOnewayDay = (step) => {
+    const next = (form.getFieldValue('date') || dayjs()).add(step, 'day')
+    if (next.isBefore(dayjs(), 'day')) return
+    pickOnewayDate('single', next)
+  }
+
+  const reverseRoute = () => {
+    const to = form.getFieldValue('to')
+    if (routeOrigins.length !== 1 || !to) return
+    const fromLabel = routeOrigins[0]
+    const toLabel = (linkOpts.from || []).find((label) => label === to || cityNameOf(label) === cityNameOf(to)) || to
+    const next = [toLabel]
+    setRouteOrigins(next)
+    form.setFieldsValue({ to: fromLabel })
+    submit({ ...form.getFieldsValue(), to: fromLabel }, next)
+  }
+
+  const hasQueryDate = queryKind === 'round'
+    ? !!(watch?.dateRange && watch.dateRange.length === 2)
+    : !!(watch && (watch.dateMode === 'single' ? watch.date : watch.dateMode === 'range' && watch.dateRange?.length === 2))
+  const noDateWarn = result && !hasQueryDate
 
   return (
     <div>
+      <div ref={queryCardRef}>
       <Card
         style={{ marginBottom: 16 }}
         title="随心飞航线查询"
       >
-        <Form form={form} layout="vertical" onFinish={submit} initialValues={{ product: 'all', dateMode: 'none' }}>
+        <Tabs
+          activeKey={queryKind}
+          onChange={(key) => {
+            setQueryKind(key)
+            setResult(null)
+            setSelKeys([])
+            setErrMsg('')
+            setPrices(null)
+            setPriceTried(false)
+            setWeekendCards(null)
+            setWeekendMeta(null)
+            if (key !== 'weekend' && !form.getFieldValue('to')) {
+              const last = loadFlightRecent()[0]
+              if (last?.to) form.setFieldsValue({ to: matchOriginLabel(linkOpts.to, last.to) || last.to })
+            }
+            if (key === 'round') form.setFieldsValue({ dateMode: 'range' })
+            else if (!(form.getFieldValue('dateRange')?.length === 2)) form.setFieldsValue({ dateMode: 'none' })
+          }}
+          items={[
+            { key: 'weekend', label: '周末雷达' },
+            { key: 'round', label: '往返航班查询' },
+            { key: 'oneway', label: '单程查询' },
+          ]}
+        />
+        {recent.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <Typography.Text type="secondary">常用航线</Typography.Text>
+            <div style={{ marginTop: 8 }}>
+              <Space wrap>
+                {recent.map((item) => (
+                  <Tag
+                    key={recentKey(item)}
+                    color="blue"
+                    closable
+                    style={{ cursor: 'pointer', marginInlineEnd: 0 }}
+                    onClose={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      setRecent(removeFlightRecent(item))
+                    }}
+                    onClick={() => {
+                      const toLabel = item.to ? (matchOriginLabel(allOrigins, item.to) || item.to) : undefined
+                      if (queryKind === 'weekend') {
+                        const fromLabel = item.from ? (matchOriginLabel(allOrigins, item.from) || item.from) : ''
+                        const origins = fromLabel ? addOriginLabels(weekendOrigins.filter((label) => cityNameOf(label) !== cityNameOf(fromLabel)), [fromLabel]) : weekendOrigins
+                        setWeekendOrigins(origins)
+                        form.setFieldsValue({ to: toLabel, product: item.product || 'all' })
+                        if (origins.length) scanWeekend(weekendPattern, weekendPick, { ...form.getFieldsValue(), to: toLabel, product: item.product || 'all' }, origins)
+                        return
+                      }
+                      const fromLabel = item.from ? (matchOriginLabel(linkOpts.from, item.from) || matchOriginLabel(allOrigins, item.from) || item.from) : ''
+                      const next = fromLabel ? [fromLabel] : routeOrigins
+                      if (fromLabel) setRouteOrigins(next)
+                      form.setFieldsValue({
+                        to: toLabel,
+                        product: item.product || 'all',
+                      })
+                      submit({ ...form.getFieldsValue(), to: toLabel, product: item.product || 'all' }, next)
+                    }}
+                  >
+                    {recentLabel(item)}
+                    {item.product && item.product !== 'all' ? ` · ${item.product}` : ''}
+                  </Tag>
+                ))}
+              </Space>
+            </div>
+          </div>
+        )}
+        <Form form={form} layout="vertical" onFinish={submit} initialValues={{ product: 'all', dateMode: 'range' }}>
           <Row gutter={16}>
-            <Col xs={24} lg={8}>
-              <Form.Item name="from" label="出发地（联动：只显示能查到航线的城市）">
-                <Select placeholder="城市 / 机场 / 三字码" {...optProps(linkOpts.from)} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} lg={8}>
-              <Form.Item name="to" label="到达地（联动：只显示能查到航线的城市）">
+            {(() => {
+              const weekend = queryKind === 'weekend'
+              const origins = weekend ? weekendOrigins : routeOrigins
+              return (
+                <Col xs={24} lg={weekend ? 12 : 9}>
+                  <Form.Item label={fieldLabel('出发地', `多选 · 最多 ${WEEKEND_ORIGIN_LIMIT} 个`)}>
+                    <OriginField
+                      value={origins}
+                      onOpen={() => (weekend ? setOriginOpen(true) : setRouteOriginOpen(true))}
+                      onChange={weekend ? setWeekendOrigins : setRouteOrigins}
+                    />
+                  </Form.Item>
+                </Col>
+              )
+            })()}
+            {queryKind !== 'weekend' && (
+              <Col xs={24} lg={2}>
+                <Form.Item label=" " colon={false} className="route-swap-item">
+                  <Tooltip title="对调出发地和到达地">
+                    <Button
+                      className="route-swap"
+                      aria-label="对调出发地和到达地"
+                      icon={<SwapIcon size={16} />}
+                      disabled={routeOrigins.length !== 1 || !(watch && watch.to)}
+                      onClick={reverseRoute}
+                    />
+                  </Tooltip>
+                </Form.Item>
+              </Col>
+            )}
+            <Col xs={24} lg={queryKind === 'weekend' ? 12 : 8}>
+              <Form.Item
+                name="to"
+                label={queryKind === 'weekend'
+                  ? fieldLabel('目的地', '可不选 · 不选扫描全部')
+                  : queryKind === 'oneway'
+                    ? fieldLabel('到达地', '可不选 · 不选地图看全部可达')
+                    : fieldLabel('到达地', '只列能查到航线的城市')}
+              >
                 <Select placeholder="城市 / 机场 / 三字码" {...optProps(linkOpts.to)} />
               </Form.Item>
             </Col>
-            <Col xs={24} lg={8}>
-              <Form.Item name="flight_no" label="航班号（可选）">
-                <Input placeholder="如 JD / JD5037" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} lg={12}>
-              <Form.Item label="日期">
-                <Space wrap style={{ width: '100%' }}>
-                  <Form.Item name="dateMode" noStyle>
-                    <Radio.Group options={[
-                      { label: '不限', value: 'none' },
-                      { label: '单日', value: 'single' },
-                      { label: '区间', value: 'range' },
-                    ]} />
+            {queryKind !== 'weekend' && (
+              <Col xs={24} lg={5}>
+                <Form.Item name="flight_no" label={fieldLabel('航班号', queryKind === 'round' ? '可选 · 只筛去程' : '可选')}>
+                  <Input placeholder="如 JD / JD5037" allowClear />
+                </Form.Item>
+              </Col>
+            )}
+            <OriginPickerModal
+              open={routeOriginOpen}
+              options={linkOpts.from}
+              value={routeOrigins}
+              recent={originRecent.length ? originRecent : recent.map((item) => item.from).filter(Boolean)}
+              onCancel={() => setRouteOriginOpen(false)}
+              onClearRecent={() => setOriginRecent(writeOriginRecent([]))}
+              onConfirm={(next) => {
+                setRouteOrigins(next)
+                setOriginRecent(writeOriginRecent([...next, ...originRecent]))
+                setRouteOriginOpen(false)
+              }}
+            />
+            <OriginPickerModal
+              open={originOpen}
+              options={allOrigins}
+              value={weekendOrigins}
+              recent={originRecent.length ? originRecent : recent.map((item) => item.from).filter(Boolean)}
+              onCancel={() => setOriginOpen(false)}
+              onClearRecent={() => setOriginRecent(writeOriginRecent([]))}
+              onConfirm={(next) => {
+                setWeekendOrigins(next)
+                setOriginRecent(writeOriginRecent([...next, ...originRecent]))
+                setOriginOpen(false)
+              }}
+            />
+            {queryKind === 'weekend' && (
+              <Col span={24}>
+                {(() => {
+                  const season = flightSeasonInfo()
+                  return (
+                    <div className={`season-strip is-${season.tone}${season.days <= 30 ? ' is-soon' : ''}`}>
+                      <span>
+                        当前 <b>{season.name}</b> · 距 {season.next.format('M-D')} {season.nextName}换季还有 <b>{season.days}</b> 天
+                        {season.days <= 30 ? '，换季后的周末按新航季班期扫描' : ''}
+                      </span>
+                      <span className="season-strip-tag">{season.tone === 'summer' ? '夏秋' : '冬春'}</span>
+                    </div>
+                  )
+                })()}
+                <div className="date-quick" style={{ marginBottom: 12 }}>
+                  {WEEKEND_LEAVES.map((item) => (
+                    <Button
+                      key={item.key}
+                      size="small"
+                      icon={item.key === 'none' ? <MoonIcon /> : item.key === 'half' ? <SunIcon /> : item.key === 'day' ? <LuggageIcon /> : <CalendarIcon />}
+                      type={weekendLeave === item.key ? 'primary' : 'default'}
+                      onClick={() => {
+                        const next = WEEKEND_PATTERNS.find((pattern) => pattern.leave === item.key && pattern.key !== 'custom')
+                        setWeekendLeave(item.key)
+                        setWeekendDates(null)
+                        if (item.key === 'custom') {
+                          setWeekendPattern('custom')
+                          setCustomCalOpen(true)
+                          return
+                        }
+                        setCustomCalOpen(false)
+                        if (next) setWeekendPattern(next.key)
+                        const values = form.getFieldsValue()
+                        if (weekendOrigins.length && next) scanWeekend(next.key, weekendPick, values, undefined, null)
+                      }}
+                    >
+                      {item.label}
+                    </Button>
+                  ))}
+                </div>
+                <div className="date-quick" style={{ marginBottom: 12 }}>
+                  {weekendPlanOptions(7).map((plan) => (
+                    <Button
+                      key={plan.index}
+                      size="small"
+                      type={(
+                        weekendLeave === 'custom'
+                          ? weekendDates?.out === plan.fri.format('YYYY-MM-DD') && weekendDates?.back === plan.sun.format('YYYY-MM-DD')
+                          : plan.index === weekendPick
+                      ) ? 'primary' : 'default'}
+                      onClick={() => {
+                        setWeekendPick(plan.index)
+                        const values = form.getFieldsValue()
+                        if (weekendLeave === 'custom') {
+                          const next = { out: plan.fri.format('YYYY-MM-DD'), back: plan.sun.format('YYYY-MM-DD') }
+                          setWeekendPattern('custom')
+                          setWeekendDates(next)
+                          setCustomCalOpen(false)
+                          if (weekendOrigins.length) scanWeekend('custom', plan.index, values, undefined, next)
+                          return
+                        }
+                        setWeekendDates(null)
+                        if (weekendOrigins.length) scanWeekend(weekendPattern, plan.index, values, undefined, null)
+                      }}
+                    >
+                      {weekendPlanChip(plan)}
+                    </Button>
+                  ))}
+                </div>
+                {weekendLeave === 'custom' && (customCalOpen || !(weekendDates?.out && weekendDates?.back)) && (
+                  <WeekendDateCalendar
+                    out={weekendDates?.out || ''}
+                    back={weekendDates?.back || ''}
+                    focus={findWeekendPlan(weekendPick)?.sat?.format('YYYY-MM-DD') || ''}
+                    onPick={(out, back) => {
+                      if (!back) {
+                        setWeekendDates({ out, back: '' })
+                        setCustomCalOpen(true)
+                        return
+                      }
+                      const next = { out, back }
+                      const matched = weekendPlanOptions(7).find((plan) => plan.fri.format('YYYY-MM-DD') === out && plan.sun.format('YYYY-MM-DD') === back)
+                      if (matched) setWeekendPick(matched.index)
+                      setWeekendDates(next)
+                      setCustomCalOpen(false)
+                      const values = form.getFieldsValue()
+                      if (weekendOrigins.length) scanWeekend('custom', matched ? matched.index : weekendPick, values, undefined, next)
+                    }}
+                  />
+                )}
+                {weekendLeave === 'custom' && weekendDates?.out && weekendDates?.back && !customCalOpen && (
+                  <div className="weekend-date-picked">
+                    <div>
+                      <span className="weekend-pattern-kicker">去程（{cnWeekday(weekendDates.out)}）</span>
+                      <b className="mono">{weekendDates.out}</b>
+                    </div>
+                    <span className="weekend-hour-pill">{staySpanLabel(weekendDates.out, weekendDates.back) || '已选'}</span>
+                    <div>
+                      <span className="weekend-pattern-kicker">返程（{cnWeekday(weekendDates.back)}）</span>
+                      <b className="mono">{weekendDates.back}</b>
+                    </div>
+                    <Button size="small" onClick={() => setCustomCalOpen(true)}>改日期</Button>
+                  </div>
+                )}
+                {weekendLeave !== 'custom' && <div className="weekend-plan">
+                  {WEEKEND_PATTERNS.filter((pattern) => pattern.leave === weekendLeave && pattern.key !== 'custom').map((pattern) => {
+                    const plan = findWeekendPlan(weekendPick)
+                    const start = plan ? plan[pattern.outDay] : null
+                    const end = plan ? plan[pattern.backDay || 'sun'] : null
+                    const on = weekendPattern === pattern.key
+                    const shownOut = on && weekendDates?.out ? weekendDates.out : start?.format('YYYY-MM-DD')
+                    const shownBack = on && weekendDates && !weekendDates.back
+                      ? ''
+                      : (on && weekendDates?.back ? weekendDates.back : end?.format('YYYY-MM-DD'))
+                    return (
+                      <button
+                        key={pattern.key}
+                        type="button"
+                        className={`weekend-pattern${on ? ' is-on' : ''}`}
+                        onClick={() => {
+                          setWeekendPattern(pattern.key)
+                          setWeekendDates(null)
+                          const values = form.getFieldsValue()
+                          if (weekendOrigins.length && weekendCards) scanWeekend(pattern.key, weekendPick, values, undefined, null)
+                        }}
+                      >
+                        <div className="weekend-pattern-top">
+                          <span className="weekend-pattern-ico">
+                            {(() => {
+                              const Icon = PATTERN_ICONS[pattern.icon] || MoonIcon
+                              return <Icon size={18} />
+                            })()}
+                          </span>
+                          <span>
+                            <span className="weekend-pattern-title">{pattern.title}</span>
+                            <span className="weekend-pattern-note">{pattern.note}</span>
+                          </span>
+                        </div>
+                        {shownOut && (
+                          <div className="weekend-pattern-dates">
+                            <div>
+                              <div className="weekend-pattern-kicker">去程（{cnWeekday(shownOut)}）</div>
+                              <div className="mono">{shownOut}</div>
+                            </div>
+                            <span className="weekend-hour-pill">{hourPillText(pattern.badge, pattern.leave)}</span>
+                            <div>
+                              <div className="weekend-pattern-kicker">返程{shownBack ? `（${cnWeekday(shownBack)}）` : ''}</div>
+                              <div className="mono">{shownBack || '在日历再点一天'}</div>
+                            </div>
+                          </div>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>}
+                <Typography.Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
+                  {weekendLeave === 'custom' ? '自选日期先点去程，再点返程。上面的周末可以直接选中那一周。' : '免请假是 48h / 35h，请半天是 60h，请一天是 72h。周五下午 12:00–17:30 的班很少，扫不到就可以换旁边那条。'}
+                </Typography.Text>
+              </Col>
+            )}
+            <Col xs={24} lg={queryKind === 'oneway' ? 24 : 12} style={{ display: queryKind === 'weekend' ? 'none' : undefined }}>
+              <Form.Item
+                label={queryKind === 'round'
+                  ? '出行日期'
+                  : fieldLabel('出行日期', watch?.to && routeOrigins.length === 1 ? '点某一天直接查当天实时价格、余票和经停' : '选定到达地后点某一天，可查当天实时价格和余票')}
+              >
+                <Form.Item name="dateMode" hidden><Input /></Form.Item>
+                {queryKind === 'oneway' && (
+                  <DateStrip mode={dateMode} date={watch?.date} onPick={pickOnewayDate} />
+                )}
+                <div className="date-nav" style={{ display: queryKind === 'oneway' && dateMode === 'single' ? undefined : 'none' }}>
+                  <Button icon={<ChevronLeftIcon size={12} />} disabled={!watch?.date || !watch.date.isAfter(dayjs(), 'day')} onClick={() => shiftOnewayDay(-1)}>前一天</Button>
+                  <Form.Item name="date" noStyle>
+                    <DatePicker
+                      className="date-nav-picker"
+                      allowClear={false}
+                      format={(v) => `${v.format('YYYY-MM-DD')} ${cnWeekday(v.format('YYYY-MM-DD'))}`}
+                      placeholder="选择单日"
+                      disabledDate={todayDisabled}
+                      onChange={(v) => v && pickOnewayDate('single', v)}
+                    />
                   </Form.Item>
-                  {dateMode !== 'none' && (
-                    <Form.Item name={dateMode === 'single' ? 'date' : 'dateRange'} noStyle>
-                      {dateMode === 'single' ? (
-                        <DatePicker style={{ width: 200, flex: 1 }} placeholder="选择单日" disabledDate={todayDisabled} />
-                      ) : (
-                        <DatePicker.RangePicker style={{ width: 260, flex: 1 }} disabledDate={todayDisabled} />
-                      )}
+                  <Button onClick={() => shiftOnewayDay(1)}>后一天<ChevronRightIcon size={12} /></Button>
+                </div>
+                <Space direction="vertical" size={8} style={{ width: '100%', display: queryKind === 'round' || dateMode === 'range' ? undefined : 'none' }}>
+                  <div className="date-inputs">
+                    <Form.Item name="dateRange" noStyle>
+                      <DatePicker.RangePicker style={{ width: 260 }} disabledDate={todayDisabled} />
                     </Form.Item>
-                  )}
+                  </div>
+                  <div className="date-quick">
+                    {upcomingWeekendOptions(5).map((opt) => {
+                      const range = watch?.dateRange
+                      const on = range?.length === 2
+                        && range[0].format('YYYY-MM-DD') === opt.start.format('YYYY-MM-DD')
+                        && range[1].format('YYYY-MM-DD') === opt.end.format('YYYY-MM-DD')
+                      return (
+                        <Button
+                          key={opt.key}
+                          size="small"
+                          type={on ? 'primary' : 'default'}
+                          onClick={() => {
+                            form.setFieldsValue({ dateMode: 'range', dateRange: [opt.start, opt.end] })
+                            if (routeOrigins.length && (queryKind === 'oneway' || form.getFieldValue('to'))) form.submit()
+                          }}
+                        >
+                          {opt.label}
+                        </Button>
+                      )
+                    })}
+                  </div>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {queryKind === 'round'
+                      ? '从下周末起。去程和回程都按这段日期筛选，航班号只筛去程。'
+                      : '区间只筛选这段日期里能飞的班，不查实时价格。'}
+                  </Typography.Text>
                 </Space>
               </Form.Item>
             </Col>
@@ -2415,18 +5787,94 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
                 />
               </Form.Item>
             </Col>
-            <Col xs={24} lg={6}>
+            <Col xs={24} lg={queryKind === 'oneway' ? 18 : 6}>
               <Form.Item label=" " colon={false}>
                 <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
-                  <Button onClick={() => { form.resetFields(); setResult(null); setErrMsg(''); setPrices(null); setStopsInfo(null); setTimesMap(null); setSeatsInfo(null); setPriceTried(false); setSelKeys([]) }}>清空</Button>
-                  <Button type="primary" htmlType="submit" loading={loading} icon={<CompassIcon />}>查询</Button>
+                  <Button onClick={() => { form.resetFields(); if (queryKind === 'round') form.setFieldsValue({ dateMode: 'range' }); setResult(null); setWeekendCards(null); setWeekendMeta(null); setWeekendOrigins([]); setErrMsg(''); setPrices(null); setStopsInfo(null); setTimesMap(null); setSeatsInfo(null); setPriceTried(false); setSelKeys([]) }}>清空</Button>
+                  <Button type="primary" htmlType="submit" loading={loading} icon={<CompassIcon />}>{queryKind === 'weekend' ? weekendScanLabel(weekendOrigins) : '查询'}</Button>
                 </Space>
               </Form.Item>
             </Col>
           </Row>
         </Form>
         {errMsg && <Alert style={{ marginTop: 8 }} type="error" showIcon message={errMsg} />}
+        {queryKind === 'weekend' && weekendCards && (
+          <div style={{ marginTop: 16 }}>
+            <div className="weekend-summary">
+              <div>
+                <div className="weekend-summary-title">
+                  {[...new Set(weekendCards.map((card) => card.fromCity).filter(Boolean))].join('、') || '所选城市'} 出发
+                </div>
+                <div className="weekend-summary-sub">
+                  匹配到 <b>{weekendCards.length}</b> 个周末往返成环的目的地
+                  {weekendMeta ? ` · ${weekendMeta.title}${weekendMeta.span ? ` · ${weekendMeta.span}` : ''} · ${weekendMeta.outDate} → ${weekendMeta.backDate}` : ''}
+                </div>
+              </div>
+              <span className="weekend-summary-note">双程都能用 666 的排在前面，2666 专享不加分</span>
+            </div>
+            {weekendCards.length > 0 && (
+              <div className="weekend-view-switch">
+                <button type="button" className={weekendView === 'list' ? 'is-on' : ''} onClick={() => setWeekendView('list')}>
+                  <TasksIcon size={16} />
+                  航线排期列表
+                </button>
+                <button type="button" className={weekendView === 'map' ? 'is-on' : ''} onClick={() => setWeekendView('map')}>
+                  <MapIcon size={16} />
+                  全国可去地图
+                  <span className="weekend-heat-badge">热力视效</span>
+                </button>
+              </div>
+            )}
+            {weekendCards.length > 0 && (
+              <div className="date-quick" style={{ marginBottom: 10 }}>
+                {[
+                  { key: 'all', label: `全部可达（${weekendCards.length}）` },
+                  { key: '666', label: `仅看 666 可用（${weekendCards.filter((card) => reachKind(card) === '666').length}）` },
+                  { key: '2666', label: `仅看 2666 专享（${weekendCards.filter((card) => reachKind(card) === '2666').length}）` },
+                ].map((item) => (
+                  <Button
+                    key={item.key}
+                    size="small"
+                    type={reachFilter === item.key ? 'primary' : 'default'}
+                    onClick={() => setReachFilter(item.key)}
+                  >
+                    {item.label}
+                  </Button>
+                ))}
+              </div>
+            )}
+            {weekendCards.length === 0 ? (
+              <Empty description="这个周末没有能配成去程加返程的目的地" />
+            ) : weekendView === 'map' ? (
+              <WeekendReachMap
+                cards={weekendCards}
+                filter={reachFilter}
+                onPick={(card) => {
+                  setWeekendView('list')
+                  window.setTimeout(() => {
+                    document.querySelectorAll('.weekend-dest.is-map-on').forEach((el) => el.classList.remove('is-map-on'))
+                    const node = document.getElementById(weekendPlanDomId(card))
+                    if (!node) return
+                    node.classList.add('is-map-on')
+                    node.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }, 60)
+                }}
+              />
+            ) : weekendCards.filter((card) => reachFilter === 'all' || reachKind(card) === reachFilter).map((card) => (
+              <WeekendPlanCard
+                key={`${card.fromCity}|${card.city}|${card.outDate}|${card.backDate}`}
+                card={card}
+                busy={watchCityKey === `${card.fromCity}|${card.city}`}
+                seatBusy={seatBusy}
+                onFollow={followWeekend}
+                onCheckSeats={checkWeekendSeats}
+                onSeatLock={setSeatBusy}
+              />
+            ))}
+          </div>
+        )}
       </Card>
+      </div>
 
       {batchSummary && (
         <Alert
@@ -2447,7 +5895,9 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
 
       {result && (
         <Card
-          title={`查询结果（${result.count} 条）`}
+          title={result.round
+            ? `查询结果（去程 ${flightGroups.filter((g) => g.leg !== 'back').length} 个航班，回程 ${flightGroups.filter((g) => g.leg === 'back').length} 个航班）`
+            : `查询结果（${visibleGroups.length} 个航班，${result.records.length} 条班期）`}
           extra={
             <Space wrap>
               <Space size={4}>
@@ -2460,7 +5910,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
                 disabled={!selKeys.length}
                 onClick={() => { setBatchMode('batch'); openBatch(selKeys) }}
               >
-                批量转为监控任务{selKeys.length ? `（${selKeys.length}）` : ''}
+                {result.round ? `同时关注去程和回程${selKeys.length ? `（${selKeys.length}）` : ''}` : `批量转为监控任务${selKeys.length ? `（${selKeys.length}）` : ''}`}
               </Button>
             </Space>
           }
@@ -2475,21 +5925,106 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
               message={null}
               description={
                 <span style={{ fontSize: 12 }}>
-                  已选择日期的前提下才能查询原价/优惠价与经停信息。当前未选择日期，结果列表仅展示静态航班信息（航司/班期/档位）。选择单日后重新查询即可看到实时价格与经停。
+                  {queryKind === 'round'
+                    ? '未选择出行日期时，去程和回程都只展示静态班期。选一段日期后重新查询，只保留这段日期里能飞的班。'
+                    : '已选择日期的前提下才能查询原价/优惠价与经停信息。当前未选择日期，结果列表仅展示静态航班信息（航司/班期/档位）。选择单日后重新查询即可看到实时价格与经停。'}
                 </span>
               }
             />
           )}
+          {queryKind === 'oneway' && !result.round && onewayCards.length > 0 && (
+            <>
+              {onewayMulti && <div className="weekend-view-switch">
+                <button type="button" className={onewayView === 'list' ? 'is-on' : ''} onClick={() => setOnewayView('list')}>
+                  <TasksIcon size={16} />
+                  航线排期列表
+                </button>
+                <button type="button" className={onewayView === 'map' ? 'is-on' : ''} onClick={() => setOnewayView('map')}>
+                  <MapIcon size={16} />
+                  全国可去地图
+                  <span className="weekend-heat-badge">热力视效</span>
+                </button>
+              </div>}
+              {(() => {
+                const cities = new Set(onewayCards.map((card) => card.city))
+                const tierCities = (kind) => new Set(onewayCards.filter((card) => reachKindOf(card, 'oneway') === kind).map((card) => card.city)).size
+                const froms = [...new Set(onewayCards.map((card) => card.fromCity).filter(Boolean))].join('、')
+                return (
+                  <div className="reach-summary">
+                    <b>{froms || '所选城市'} 出发</b>
+                    <span>覆盖 <b>{cities.size}</b> 个城市</span>
+                    <span>共 <b>{result.records.length}</b> 个班期</span>
+                    <span>666 通达 <b>{tierCities('666')}</b> 城 / 2666 专享 <b>{tierCities('2666')}</b> 城</span>
+                    {preferDay && <span className="reach-summary-day">{preferDay.format('M月D日')} {cnWeekday(preferDay.format('YYYY-MM-DD'))}</span>}
+                  </div>
+                )
+              })()}
+              <div className="filter-groups" style={{ display: onewayMulti || onewayCity ? undefined : 'none' }}>
+                <div className="filter-group">
+                <span className="filter-group-label">行程</span>
+                {[
+                  { key: 'all', label: `全部（${onewayCards.length}）` },
+                  { key: 'round', label: `往返（${onewayCards.filter((card) => card.trip === 'round').length}）` },
+                  { key: 'out', label: `有去无回（${onewayCards.filter((card) => card.trip === 'out').length}）` },
+                  { key: 'back', label: `有回无去（${onewayCards.filter((card) => card.trip === 'back').length}）` },
+                ].map((item) => (
+                  <Button
+                    key={`trip-${item.key}`}
+                    size="small"
+                    type={onewayTrip === item.key ? 'primary' : 'default'}
+                    onClick={() => setOnewayTrip(item.key)}
+                  >
+                    {item.label}
+                  </Button>
+                ))}
+                </div>
+                <div className="filter-group">
+                <span className="filter-group-label">档位</span>
+                {[
+                  { key: 'all', label: `全部（${onewayCards.length}）` },
+                  { key: '666', label: `666 可用（${onewayCards.filter((card) => reachKindOf(card, 'oneway') === '666').length}）` },
+                  { key: '2666', label: `2666 专享（${onewayCards.filter((card) => reachKindOf(card, 'oneway') === '2666').length}）` },
+                ].map((item) => (
+                  <Button
+                    key={`tier-${item.key}`}
+                    size="small"
+                    type={reachFilter === item.key ? 'primary' : 'default'}
+                    onClick={() => setReachFilter(item.key)}
+                  >
+                    {item.label}
+                  </Button>
+                ))}
+                </div>
+                {onewayCity ? (
+                  <Tag closable onClose={() => setOnewayCity('')} style={{ marginInlineEnd: 0 }}>只看 {onewayCity}</Tag>
+                ) : null}
+              </div>
+              {onewayView === 'map' && onewayMulti ? (
+                <WeekendReachMap
+                  cards={onewayCards}
+                  filter={reachFilter}
+                  tripFilter={onewayTrip}
+                  variant="oneway"
+                  onPick={(card) => {
+                    setOnewayCity(card.city)
+                    if (card.trip !== 'back') setOnewayView('list')
+                  }}
+                />
+              ) : null}
+            </>
+          )}
+          {(queryKind !== 'oneway' || result.round || onewayView !== 'map' || !onewayMulti) && (
           <Table
-            rowKey={(_, i) => i}
+            rowKey="key"
             size="small"
             pagination={{ pageSize: 20, showSizeChanger: false }}
-            dataSource={result.records}
-            columns={columns}
+            dataSource={visibleGroups}
+            columns={visibleColumns}
             scroll={{ x: 'max-content' }}
             rowSelection={{ selectedRowKeys: selKeys, onChange: setSelKeys }}
             locale={{ emptyText: <Empty description="没有符合条件的航班，换个条件试试" /> }}
           />
+          )}
         </Card>
       )}
 
@@ -2515,11 +6050,11 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
                 setBatchTier(v)
                 // 档位条件变化：日期选项按档位×日期规则实时收窄（666 档节假日不可用等），
                 // 并剔除已被规则禁用的已选日期；空=不限→按航线产品档位计算（同打开时）
-                setBatchGroups((prev) => prev.map((g) => {
+                setBatchGroups((prev) => withReturnSuggestions(prev.map((g) => {
                   const eff = v.length ? v : String(g.product || '').split('/').map((s) => s.trim()).filter(Boolean)
                   const dates = filterTierDates(expandRecordDates(g.rows), eff.join('/'), tierBlockRules).filter((d) => d >= todayStr)
                   return { ...g, dates, selected: (g.selected || []).filter((d) => dates.includes(d)) }
-                }))
+                })))
               }}
               options={TIER_OPTIONS}
               maxTagCount="responsive"
@@ -2554,40 +6089,53 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules }) {
             />
           </Col>
         </Row>
-        {batchGroups.map((g) => (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <Switch size="small" checked={roundTrip} disabled={roundBusy} onChange={toggleRoundTrip} />
+          <span>同时监控回程</span>
+          {roundBusy && <Spin size="small" />}
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {result?.round
+              ? '去程和回程一起创建。回程默认勾上去程第二天还飞的班，取消勾选的不会创建。'
+              : '按去程已选日期，勾上第二天还飞的回程。取消勾选的不会创建。'}
+          </Typography.Text>
+        </div>
+        {batchGroups.filter((g) => g.direction !== 'back').map((g) => (
           <Card
             key={g.key}
             size="small"
             style={{ marginBottom: 12 }}
             title={
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, maxWidth: '100%', minWidth: 0, overflow: 'hidden' }}>
+                {roundTrip && <Tag color={g.direction === 'back' ? 'blue' : 'gold'} style={{ marginInlineEnd: 0 }}>{g.direction === 'back' ? '回程' : '去程'}</Tag>}
                 <span className="mono" style={{ fontWeight: 600, fontSize: 12, flexShrink: 0 }}>{g.flight_no || '—'}</span>
                 <Typography.Text type="secondary" style={{ fontSize: 11, flexShrink: 0 }}>{g.dep_time || '--:--'} → {g.arr_time || '--:--'}</Typography.Text>
                 <ChevronRightIcon size={9} style={{ color: 'var(--color-muted)', flexShrink: 0 }} />
-                <span style={{ fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{cityWithProvince(g.from_city)}（{g.from_iata}）</span>
+                <span style={{ fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{cityWithProvince(g.from_city)}</span>
                 <ChevronRightIcon size={9} style={{ color: 'var(--color-muted)', flexShrink: 0 }} />
-                <span style={{ fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{cityWithProvince(g.to_city)}（{g.to_iata}）</span>
+                <span style={{ fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{cityWithProvince(g.to_city)}</span>
               </div>
             }
             extra={<Tag color={g.product.includes('2666') ? 'purple' : 'gold'}>{g.product}</Tag>}
           >
             <div className="muted" style={{ marginBottom: 6, fontSize: 12 }}>
-              共有 {g.dates.length} 天可选，请勾选要监控的日期（可多选）：
+              共有 {g.dates.length} 天可飞。在日历里点选，周六、周日单独标出；灰色日期这班不飞。
             </div>
-            <Select
-              mode="multiple"
-              style={{ width: '100%' }}
-              placeholder="选择监控日期"
+            <DatePickCalendar
+              dates={g.dates}
               value={g.selected}
-              maxTagCount="responsive"
               onChange={(v) => {
-                const next = batchGroups.map((x) => (x.key === g.key ? { ...x, selected: v } : x))
-                setBatchGroups(next)
+                setBatchGroups((prev) => withReturnSuggestions(prev.map((x) => (x.key === g.key ? { ...x, selected: v } : x))))
               }}
-              options={g.dates.map((d) => ({ value: d, label: d }))}
             />
           </Card>
         ))}
+        {roundTrip && (
+          <ReturnPickList
+            groups={batchGroups.filter((g) => g.direction === 'back')}
+            onToggle={(key, checked) => setBatchGroups((prev) => prev.map((x) => (x.key === key ? { ...x, checked, choicePinned: true } : x)))}
+            onDates={(key, v) => setBatchGroups((prev) => prev.map((x) => (x.key === key ? { ...x, selected: v, checked: v.length > 0, returnTouched: true, choicePinned: true } : x)))}
+          />
+        )}
       </Modal>
 
       <Modal
@@ -2680,6 +6228,11 @@ const appTheme = (dark) => ({
 export default function App() {
   const { message } = AntApp.useApp()
   const [tab, setTab] = useState('overview')
+  const [flightDetail, setFlightDetail] = useState(null)
+  const openFlightDetail = (req) => {
+    setFlightDetail({ ...req, id: `${req.flightNo || ''}|${req.date}|${Date.now()}` })
+    setTab('flights')
+  }
   const [historyAuto, setHistoryAuto] = useState(false)
   const [darkMode, setDarkMode] = useState(() => {
     try {
@@ -2782,7 +6335,7 @@ export default function App() {
             <Overview data={data} onGo={setTab} onToggleStatus={toggleStatus} onChanged={refresh} msg={msg} />
           </div>
           <div style={{ display: tab === 'tasks' ? 'block' : 'none' }}>
-            <Tasks data={data} onChanged={refresh} msg={msg} onGo={setTab} tierBlockRules={tierBlockRules} />
+            <Tasks data={data} onChanged={refresh} msg={msg} onGo={setTab} onOpenDetail={openFlightDetail} tierBlockRules={tierBlockRules} />
           </div>
           <div style={{ display: tab === 'flights' ? 'block' : 'none' }}>
             <FlightQuery
@@ -2791,6 +6344,7 @@ export default function App() {
               onChanged={refresh}
               onGo={setTab}
               tierBlockRules={tierBlockRules}
+              flightDetail={flightDetail}
             />
           </div>
           <div style={{ display: tab === 'notify' ? 'block' : 'none' }}>
