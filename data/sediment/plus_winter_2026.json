@@ -49785,9 +49785,9 @@
    ],
    "product": "666",
    "product_conflict": false,
-   "source": "blackxool_v1009",
+   "source": "hna_booking",
    "season": "2026冬春",
-   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+   "notes": "时刻与窗口仍按 Blackxool v1009 winter_active=Y（666表）：21:55-00:30，二四六，2026-10-27至2026-12-17，不是全季。官网订票页 2026-10-27 查到西部航空 PN6448 21:55 揭阳潮汕→00:30+1 重庆江北；同页还有 PN6306 17:00-19:15，未另建冬春行。静态航班时刻表仍只列 PN6306 09:25、PN6450 23:00/23:30，窗口止于 2026-10-24，未列 PN6448；本条以订票页为准。666 档仍来自 CSV，订票页未核权益档"
   },
   {
    "flight_no": "Y87584",

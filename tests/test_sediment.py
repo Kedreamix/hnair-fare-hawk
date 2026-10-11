@@ -280,9 +280,11 @@ def test_blackxool_gap_rows_live_only_in_winter_table():
     """Blackxool 缺口补进行只在 plus_winter，主表不另写一份冬春时刻。"""
     gd = sediment.query(from_city="SWA", to_city="CKG", flight_no="PN6448", date_str="2026-10-27")
     assert len(gd) == 1
-    assert gd[0]["source"] == "blackxool_v1009"
+    assert gd[0]["source"] == "hna_booking"
     assert gd[0]["dep_time"] == "21:55" and gd[0]["arr_time"] == "00:30"
     assert gd[0]["days"] == [2, 4, 6]
+    assert gd[0]["effective_dates"] == [["2026-10-27", "2026-12-17"]]
+    assert "订票页" in gd[0]["notes"] and "未列 PN6448" in gd[0]["notes"]
     ret = sediment.query(from_city="TNA", to_city="SZX", flight_no="Y87584", date_str="2026-10-26")
     assert len(ret) == 1 and ret[0]["source"] == "blackxool_v1009"
     assert ret[0]["dep_time"] == "20:30"
