@@ -2,7 +2,7 @@
  "season": "2026冬春",
  "title": "海航 PLUS 适用航班 26 冬春",
  "generated_at": "2026-10-10",
- "count": 1491,
+ "count": 1477,
  "records": [
   {
    "flight_no": "GS7514",
@@ -33168,71 +33168,6 @@
    "notes": null
   },
   {
-   "flight_no": "HU7702",
-   "carrier": "海南航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "北京",
-    "airport": "北京首都国际机场",
-    "iata": "PEK"
-   },
-   "dep_time": "07:30",
-   "arr_time": "10:40",
-   "days": [
-    3,
-    7
-   ],
-   "effective_dates": [
-    [
-     "2026-10-25",
-     "2027-03-24"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
-   "flight_no": "HU7702",
-   "carrier": "海南航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "北京",
-    "airport": "北京首都国际机场",
-    "iata": "PEK"
-   },
-   "dep_time": "07:30",
-   "arr_time": "10:40",
-   "days": [
-    1,
-    2,
-    4,
-    5,
-    6
-   ],
-   "effective_dates": [
-    [
-     "2026-10-26",
-     "2027-03-27"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
    "flight_no": "HU7714",
    "carrier": "海南航空",
    "origin": {
@@ -33263,42 +33198,6 @@
     ]
    ],
    "product": "2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
-   "flight_no": "HU7716",
-   "carrier": "海南航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "北京",
-    "airport": "北京首都国际机场",
-    "iata": "PEK"
-   },
-   "dep_time": "21:10",
-   "arr_time": "00:25",
-   "days": [
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7
-   ],
-   "effective_dates": [
-    [
-     "2026-10-25",
-     "2027-03-27"
-    ]
-   ],
-   "product": "666/2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
@@ -33923,42 +33822,6 @@
    "notes": null
   },
   {
-   "flight_no": "Y87903",
-   "carrier": "金鹏航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "济南",
-    "airport": "济南遥墙国际机场",
-    "iata": "TNA"
-   },
-   "dep_time": "06:25",
-   "arr_time": "09:00",
-   "days": [
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7
-   ],
-   "effective_dates": [
-    [
-     "2026-10-25",
-     "2027-03-27"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
    "flight_no": "8L9890",
    "carrier": "祥鹏航空",
    "origin": {
@@ -34158,42 +34021,6 @@
    "notes": null
   },
   {
-   "flight_no": "HU7852",
-   "carrier": "海南航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "兰州",
-    "airport": "兰州中川国际机场",
-    "iata": "LHW"
-   },
-   "dep_time": "07:45",
-   "arr_time": "11:15",
-   "days": [
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7
-   ],
-   "effective_dates": [
-    [
-     "2026-10-25",
-     "2027-03-27"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
    "flight_no": "Y87939",
    "carrier": "金鹏航空",
    "origin": {
@@ -34279,42 +34106,6 @@
     [
      "2026-10-27",
      "2027-03-25"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
-   "flight_no": "HU7763",
-   "carrier": "海南航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "青岛",
-    "airport": "青岛胶东国际机场",
-    "iata": "TAO"
-   },
-   "dep_time": "06:40",
-   "arr_time": "10:05",
-   "days": [
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7
-   ],
-   "effective_dates": [
-    [
-     "2026-10-25",
-     "2027-03-27"
     ]
    ],
    "product": "666/2666",
@@ -34526,71 +34317,6 @@
    "notes": null
   },
   {
-   "flight_no": "HU7779",
-   "carrier": "海南航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "沈阳",
-    "airport": "沈阳桃仙国际机场",
-    "iata": "SHE"
-   },
-   "dep_time": "06:50",
-   "arr_time": "12:40",
-   "days": [
-    2,
-    4,
-    6
-   ],
-   "effective_dates": [
-    [
-     "2026-10-27",
-     "2027-03-27"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
-   "flight_no": "HU7779",
-   "carrier": "海南航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "沈阳",
-    "airport": "沈阳桃仙国际机场",
-    "iata": "SHE"
-   },
-   "dep_time": "07:05",
-   "arr_time": "12:40",
-   "days": [
-    1,
-    3,
-    5,
-    7
-   ],
-   "effective_dates": [
-    [
-     "2026-10-25",
-     "2027-03-26"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
    "flight_no": "HU7769",
    "carrier": "海南航空",
    "origin": {
@@ -34605,143 +34331,6 @@
    },
    "dep_time": "07:55",
    "arr_time": "09:45",
-   "days": [
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7
-   ],
-   "effective_dates": [
-    [
-     "2026-10-25",
-     "2027-03-27"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
-   "flight_no": "HU7779",
-   "carrier": "海南航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "武汉",
-    "airport": "武汉天河国际机场",
-    "iata": "WUH"
-   },
-   "dep_time": "06:50",
-   "arr_time": "08:55",
-   "days": [
-    2,
-    4,
-    6
-   ],
-   "effective_dates": [
-    [
-     "2026-10-27",
-     "2027-03-27"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
-   "flight_no": "HU7779",
-   "carrier": "海南航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "武汉",
-    "airport": "武汉天河国际机场",
-    "iata": "WUH"
-   },
-   "dep_time": "07:05",
-   "arr_time": "09:00",
-   "days": [
-    1,
-    3,
-    5,
-    7
-   ],
-   "effective_dates": [
-    [
-     "2026-10-25",
-     "2027-03-26"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
-   "flight_no": "HU7852",
-   "carrier": "海南航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "乌鲁木齐",
-    "airport": "乌鲁木齐天山国际机场",
-    "iata": "URC"
-   },
-   "dep_time": "07:45",
-   "arr_time": "15:00",
-   "days": [
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7
-   ],
-   "effective_dates": [
-    [
-     "2026-10-25",
-     "2027-03-27"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
-   "flight_no": "UQ2616",
-   "carrier": "乌鲁木齐航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "乌鲁木齐",
-    "airport": "乌鲁木齐天山国际机场",
-    "iata": "URC"
-   },
-   "dep_time": "06:55",
-   "arr_time": "12:35",
    "days": [
     1,
     2,
@@ -34930,42 +34519,6 @@
    "notes": null
   },
   {
-   "flight_no": "UQ2616",
-   "carrier": "乌鲁木齐航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "于田",
-    "airport": "于田万方机场",
-    "iata": "YTW"
-   },
-   "dep_time": "06:55",
-   "arr_time": "15:50",
-   "days": [
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7
-   ],
-   "effective_dates": [
-    [
-     "2026-10-25",
-     "2027-03-27"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
    "flight_no": "PN6312",
    "carrier": "西部航空",
    "origin": {
@@ -35025,39 +34578,6 @@
     [
      "2026-10-27",
      "2027-03-27"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
-   "flight_no": "Y87913",
-   "carrier": "金鹏航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "舟山",
-    "airport": "舟山普陀山机场",
-    "iata": "HSN"
-   },
-   "dep_time": "07:40",
-   "arr_time": "09:40",
-   "days": [
-    1,
-    3,
-    5,
-    7
-   ],
-   "effective_dates": [
-    [
-     "2026-10-25",
-     "2027-03-26"
     ]
    ],
    "product": "666/2666",
