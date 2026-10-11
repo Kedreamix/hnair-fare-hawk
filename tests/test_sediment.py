@@ -276,6 +276,20 @@ def test_szx_winter_official_schedule():
     assert sediment.query(from_city="SZX", to_city="PEK", flight_no="HU7716", date_str="2026-10-24")[0]["dep_time"] == "20:10"
 
 
+def test_blackxool_gap_rows_live_only_in_winter_table():
+    """Blackxool 缺口补进行只在 plus_winter，主表不另写一份冬春时刻。"""
+    gd = sediment.query(from_city="SWA", to_city="CKG", flight_no="PN6448", date_str="2026-10-27")
+    assert len(gd) == 1
+    assert gd[0]["source"] == "blackxool_v1009"
+    assert gd[0]["dep_time"] == "21:55" and gd[0]["arr_time"] == "00:30"
+    assert gd[0]["days"] == [2, 4, 6]
+    ret = sediment.query(from_city="TNA", to_city="SZX", flight_no="Y87584", date_str="2026-10-26")
+    assert len(ret) == 1 and ret[0]["source"] == "blackxool_v1009"
+    assert ret[0]["dep_time"] == "20:30"
+    # 周二不飞一三五日
+    assert sediment.query(from_city="TNA", to_city="SZX", flight_no="Y87584", date_str="2026-10-27") == []
+
+
 def test_winter_routes_are_queryable():
     """冬春表按班期和适用日期可查，1 月日期落在 2027 而不是 2026。"""
     rows = sediment.query(from_city="阿勒泰", to_city="西安", date_str="2026-11-02", flight_no="9H8336")
