@@ -188,29 +188,41 @@ def test_meta_shape():
 
 
 def test_same_flight_keeps_each_schedule():
-    """同一航班号排在一起，但不同时刻和日期段保持原样，不合成一条。"""
+    """同一航班号排在一起，但不同时刻和日期段保持原样，不合成一条。
+
+    夏秋尾在 flights_normalized；冬春只在 plus_winter。周三命中的是 PLUS 原有拆行，
+    官网主班是一二四五六那条。
+    """
     rows = sediment.query(from_city="深圳", to_city="北京", flight_no="HU7702")
-    assert [row["dep_time"] for row in rows] == ["07:10", "07:30"]
+    assert [row["dep_time"] for row in rows] == ["07:10", "07:30", "07:30"]
+    assert rows[0]["source"] != "plus_winter_2026"
     assert rows[0]["arr_time"] == "10:15"
     assert rows[0]["days"] == [1, 2, 3, 4, 5, 6, 7]
     assert rows[0]["effective_dates"] == [["2026-09-02", "2026-10-24"]]
-    assert rows[1]["arr_time"] == "10:40"
-    assert rows[1]["days"] == [1, 2, 4, 5, 6]
-    assert rows[1]["effective_dates"] == [["2026-10-26", "2027-03-27"]]
-    assert rows[1]["product"] == "666/2666"
-    # 2026-11-04 是周三，官网班期不含周三
-    assert sediment.query(from_city="深圳", to_city="北京", flight_no="HU7702", date_str="2026-11-04") == []
+    assert rows[1]["source"] == "plus_winter_2026"
+    assert rows[1]["days"] == [3, 7]
+    assert rows[1]["effective_dates"] == [["2026-10-25", "2027-03-24"]]
+    assert rows[2]["source"] == "plus_winter_2026"
+    assert rows[2]["arr_time"] == "10:40"
+    assert rows[2]["days"] == [1, 2, 4, 5, 6]
+    assert rows[2]["effective_dates"] == [["2026-10-26", "2027-03-27"]]
+    winter = sediment.query(from_city="深圳", to_city="北京", flight_no="HU7702", date_str="2026-11-04")
+    assert len(winter) == 1
+    assert winter[0]["source"] == "plus_winter_2026"
+    assert winter[0]["days"] == [3, 7]
     monday = sediment.query(from_city="深圳", to_city="北京", flight_no="HU7702", date_str="2026-11-02")
     assert len(monday) == 1
+    assert monday[0]["source"] == "plus_winter_2026"
     assert monday[0]["dep_time"] == "07:30"
-    assert monday[0]["effective_dates"] == [["2026-10-26", "2027-03-27"]]
+    assert monday[0]["days"] == [1, 2, 4, 5, 6]
 
 
 def test_szx_winter_official_schedule():
-    """深圳冬春以 ableAirlineQuery 2026-10-26 为准，夏秋尾不延伸进冬春窗。"""
+    """深圳冬春只在 plus_winter，时刻按官网 2026-10-26；主表只留夏秋尾。"""
     def one(origin, dest, flight_no, day):
         rows = sediment.query(from_city=origin, to_city=dest, flight_no=flight_no, date_str=day)
-        assert len(rows) == 1, (flight_no, dest, day, rows)
+        assert len(rows) == 1, (flight_no, dest, day, [(r["dep_time"], r["days"], r["source"]) for r in rows])
+        assert rows[0]["source"] == "plus_winter_2026"
         return rows[0]
 
     y87903 = one("SZX", "TNA", "Y87903", "2026-10-26")
@@ -219,7 +231,8 @@ def test_szx_winter_official_schedule():
     assert y87903["effective_dates"] == [["2026-10-25", "2027-03-27"]]
     assert y87903["product"] == "666/2666"
     assert sediment.query(from_city="SZX", to_city="TNA", flight_no="Y87525", date_str="2026-10-26") == []
-    assert sediment.query(from_city="SZX", to_city="TNA", flight_no="Y87525", date_str="2026-10-24")
+    summer_tna = sediment.query(from_city="SZX", to_city="TNA", flight_no="Y87525", date_str="2026-10-24")
+    assert summer_tna and summer_tna[0]["source"] != "plus_winter_2026"
 
     y87913 = one("SZX", "HSN", "Y87913", "2026-10-26")
     assert (y87913["dep_time"], y87913["arr_time"]) == ("07:40", "09:40")
@@ -235,8 +248,9 @@ def test_szx_winter_official_schedule():
     she = one("SZX", "SHE", "HU7779", "2026-10-26")
     assert (she["dep_time"], she["arr_time"]) == ("07:05", "12:40")
     assert she["effective_dates"] == [["2026-10-25", "2026-12-23"]]
-    assert sediment.query(from_city="SZX", to_city="WUH", flight_no="HU7779", date_str="2026-10-27") == []
-    assert sediment.query(from_city="SZX", to_city="SHE", flight_no="HU7779", date_str="2026-12-24") == []
+    float_wuh = one("SZX", "WUH", "HU7779", "2026-10-27")
+    assert float_wuh["dep_time"] == "06:50" and float_wuh["days"] == [2, 4, 6]
+    assert sediment.query(from_city="SZX", to_city="WUH", flight_no="HU7779", date_str="2026-12-28") == []
 
     tao = one("SZX", "TAO", "HU7763", "2026-10-26")
     assert (tao["dep_time"], tao["arr_time"]) == ("06:40", "10:05")
