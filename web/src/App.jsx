@@ -3655,6 +3655,7 @@ function weekendPlanDomId(card) {
 }
 
 function reachKindOf(card, variant) {
+  if (variant === 'overview') return card?.kind === '666' ? '666' : '2666'
   if (variant === 'oneway') return hasProduct((card.outs[0] || card.backs[0])?.product, '666') ? '666' : '2666'
   return reachKind(card)
 }
@@ -3673,6 +3674,7 @@ function reachProductOf(card, variant) {
 }
 
 function reachScoreOf(card, variant) {
+  if (variant === 'overview') return Number(card.flightCount) || 0
   if (variant === 'oneway') {
     const flight = card.outs?.[0] || card.backs?.[0]
     const counted = card.outs?.length ? card.outs : (card.backs || [])
@@ -3731,6 +3733,52 @@ function onewayReachCards(records, returns) {
     const trip = outs.length && backs.length ? 'round' : outs.length ? 'out' : 'back'
     return { ...card, outs, backs, trip }
   })
+}
+
+function cardsFromHeatmap(payloads) {
+  const cards = []
+  for (const payload of payloads || []) {
+    const origin = payload?.origin || {}
+    const originPoint = {
+      city: origin.city,
+      iata: origin.iata,
+      airport: origin.airport,
+      lat: origin.lat,
+      lon: origin.lon,
+    }
+    for (const dest of payload?.destinations || []) {
+      const destPoint = {
+        city: dest.city,
+        iata: dest.iata,
+        airport: dest.airport,
+        lat: dest.lat,
+        lon: dest.lon,
+      }
+      const samples = dest.samples?.length
+        ? dest.samples
+        : [{ flight_no: '', dep_time: '', product: dest.kind === '666' ? '666' : '2666', dest_iata: dest.iata }]
+      const outs = samples.map((sample) => ({
+        flight_no: sample.flight_no,
+        dep_time: sample.dep_time,
+        arr_time: sample.arr_time,
+        product: sample.product || (dest.kind === '666' ? '666' : '2666'),
+        origin: originPoint,
+        dest: { ...destPoint, iata: sample.dest_iata || dest.iata },
+      }))
+      cards.push({
+        city: dest.city,
+        fromCity: origin.city,
+        trip: 'out',
+        outs,
+        backs: [],
+        kind: dest.kind,
+        flightCount: dest.departures || dest.flights || outs.length,
+        flightTotal: dest.flights || outs.length,
+        byDate: dest.by_date || [],
+      })
+    }
+  }
+  return cards
 }
 
 function tripLabel(card) {
@@ -3923,6 +3971,12 @@ function drawMapDot(ctx, x, y, r, color, ratio) {
 function reachCaption(card, variant, product) {
   const outN = card.outs?.length || 0
   const backN = card.backs?.length || 0
+  if (variant === 'overview') {
+    const n = card.flightTotal || outN
+    const days = card.byDate?.length || 0
+    const tier = card.kind === '666' ? '666' : '2666'
+    return days > 1 ? `${tier} · ${n}班/${days}天` : `${tier} · ${n}班`
+  }
   if (variant !== 'oneway') return `${product} · 去${outN} 回${backN}`
   const timeSource = outN ? card.outs : card.backs
   const times = timeFlyLabels(timeSource, 1)[0]
@@ -3930,13 +3984,23 @@ function reachCaption(card, variant, product) {
 }
 
 /* 底图 + 热力层只随数据/尺寸/主题重建，悬停时只重绘连线、图钉与标签 */
+function mapAirport(base, point) {
+  if (!point) return null
+  const known = point.iata ? base.airports[point.iata] : null
+  if (known?.lat != null && known?.lon != null) return { ...known, city: known.city || point.city, iata: point.iata }
+  if (point.lat == null || point.lon == null) return null
+  return { iata: point.iata, city: point.city, lat: point.lat, lon: point.lon }
+}
+
 function buildReachScene({ base, cards, filter, tripFilter, variant, width, height, ratio, palette }) {
   const grouped = new Map()
   for (const card of visibleMapCards(cards, filter, variant, tripFilter)) {
     const out = card.outs[0]
     const back = card.backs[0]
-    const origin = base.airports[out?.origin?.iata || back?.dest?.iata]
-    const dest = base.airports[out?.dest?.iata || back?.origin?.iata]
+    const origin = mapAirport(base, out?.origin || (back ? { iata: back.dest?.iata, city: back.dest?.city } : null))
+      || mapAirport(base, back?.dest)
+    const dest = mapAirport(base, out?.dest || (back ? { iata: back.origin?.iata, city: back.origin?.city } : null))
+      || mapAirport(base, back?.origin)
     if (!origin || !dest) continue
     const product = reachProductOf(card, variant)
     const spot = {
@@ -3948,8 +4012,10 @@ function buildReachScene({ base, cards, filter, tripFilter, variant, width, heig
       kind: reachKindOf(card, variant),
       product,
       caption: reachCaption(card, variant, product),
-      mapCaption: variant === 'oneway' ? reachCaption(card, variant, product) : `去${card.outs?.length || 0} 回${card.backs?.length || 0}`,
-      options: (card.outs?.length || 0) + (card.backs?.length || 0),
+      mapCaption: variant === 'oneway' || variant === 'overview'
+        ? reachCaption(card, variant, product)
+        : `去${card.outs?.length || 0} 回${card.backs?.length || 0}`,
+      options: Number(card.flightCount) || ((card.outs?.length || 0) + (card.backs?.length || 0)),
     }
     const cityKey = card.city || dest.city || dest.iata
     const prev = grouped.get(cityKey)
@@ -4236,9 +4302,19 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
     const out = spot.card.outs[0]
     const back = variant === 'oneway' ? spot.card.backs?.[0] : spot.card.backs[0]
     const timed = [...(spot.card.outs?.length ? spot.card.outs : spot.card.backs || [])].sort((a, b) => String(a.dep_time || '').localeCompare(String(b.dep_time || '')))
-    const outLines = variant === 'oneway'
+    const dateRows = variant === 'overview' ? (spot.card.byDate || []) : []
+    const outLines = variant === 'overview'
+      ? dateRows.slice(0, 4).map((row) => {
+        const md = String(row.date || '').slice(5).replace('-', '/')
+        const bits = [`${row.flights}班`]
+        if (row['666']) bits.push(`666 ${row['666']}`)
+        if (row['2666']) bits.push(`2666 ${row['2666']}`)
+        return `${md} ${bits.join(' · ')}`
+      })
+      : variant === 'oneway'
       ? timed.slice(0, 4).map((flight) => `${spot.card.trip === 'back' ? '回程 ' : ''}${timeFlyLabel(flight.dep_time) || flight.dep_time || '--:--'}${flight.arr_time ? ` → ${flight.arr_time}` : ''}`)
       : (out ? [`${out.flight_no}  ${out.dep_time || '--:--'}`] : [])
+    if (variant === 'overview' && dateRows.length > 4) outLines.push(`另有 ${dateRows.length - 4} 天有班`)
     if (variant === 'oneway') {
       const rest = timeFlyLabels(timed.slice(4), 3)
       if (rest.length) outLines.push(rest.join(' / '))
@@ -4268,7 +4344,7 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
       <div className="weekend-map-head">
         <div>
           <b>当前出发地：{originNames.join('、') || '未选'}</b>
-          <span>（{new Set(shown.map((card) => card.city)).size} 个可达城市 · 点城市{variant === 'oneway' ? '筛选列表' : '查看方案'}）</span>
+          <span>（{new Set(shown.map((card) => card.city)).size} 个可达城市 · 点城市{variant === 'overview' ? '查看航班' : variant === 'oneway' ? '筛选列表' : '查看方案'}）</span>
         </div>
         <div className="weekend-map-legend">
           {variant === 'oneway' ? (
@@ -4279,11 +4355,11 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
             </>
           ) : (
             <>
-              <span><i className="map-dot is-round" />双程 666</span>
+              <span><i className="map-dot is-round" />{variant === 'overview' ? '666 可用' : '双程 666'}</span>
               <span><i className="map-dot is-muted" />2666 专享</span>
             </>
           )}
-          <span className="map-heat-legend" title="热度按该城市可选的去程 + 回程班次数计算">
+          <span className="map-heat-legend" title={variant === 'overview' ? '热度按所选日期内的出发班次' : '热度按该城市可选的去程 + 回程班次数计算'}>
             可选班次 少<i aria-hidden="true" />多
           </span>
         </div>
@@ -4309,9 +4385,9 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
           {tip && (
             <div className="weekend-map-tip" style={{ left: tip.x, top: tip.y }}>
               <b>{tip.city}</b>
-              <span>{variant === 'oneway' ? `从${tip.from}出发 · ${tip.tripText}` : `从${tip.from}出发 · 可选 ${tip.caption.split(' · ')[1] || ''}`}</span>
+              <span>{variant === 'oneway' ? `从${tip.from}出发 · ${tip.tripText}` : variant === 'overview' ? `从${tip.from}出发 · ${tip.caption}` : `从${tip.from}出发 · 可选 ${tip.caption.split(' · ')[1] || ''}`}</span>
               <span className={tip.product === '2666' ? 'is-muted' : ''}>{tip.product}</span>
-              {(tip.outLines || []).map((line) => <span key={line}>{variant === 'oneway' ? line : `去程 ${line}`}</span>)}
+              {(tip.outLines || []).map((line) => <span key={line}>{variant === 'weekend' ? `去程 ${line}` : line}</span>)}
               {tip.backText ? <span>返程 {tip.backText}</span> : null}
             </div>
           )}
@@ -4525,8 +4601,10 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
   const [reachFilter, setReachFilter] = useState('all')
   const [originOpen, setOriginOpen] = useState(false)
   const [weekendView, setWeekendView] = useState('list')
-  const [onewayView, setOnewayView] = useState('list')
   const [onewayCity, setOnewayCity] = useState('')
+  const [onewayHeat, setOnewayHeat] = useState(null)
+  const [onewayHeatLoading, setOnewayHeatLoading] = useState(false)
+  const [onewayHeatErr, setOnewayHeatErr] = useState('')
   const [onewayTrip, setOnewayTrip] = useState('all')
   const [originRecent, setOriginRecent] = useState(loadOriginRecent)
   const originDefaulted = useRef(false)
@@ -4637,6 +4715,59 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watch, routeOrigins])
+
+  const heatKey = [
+    queryKind,
+    routeOrigins.map(cityNameOf).join('|'),
+    watch?.product || '',
+    watch?.dateMode || '',
+    watch?.dateMode === 'single' && watch?.date ? watch.date.format('YYYY-MM-DD') : '',
+    watch?.dateMode === 'range' && watch?.dateRange?.length === 2 ? watch.dateRange[0].format('YYYY-MM-DD') : '',
+    watch?.dateMode === 'range' && watch?.dateRange?.length === 2 ? watch.dateRange[1].format('YYYY-MM-DD') : '',
+  ].join('~')
+  useEffect(() => {
+    if (queryKind !== 'oneway') return undefined
+    const origins = routeOrigins.slice(0, WEEKEND_ORIGIN_LIMIT)
+    if (!origins.length) {
+      setOnewayHeat(null)
+      return undefined
+    }
+    const product = !watch || watch.product === 'all' ? '' : (watch.product || '')
+    let date = ''
+    let date_start = ''
+    let date_end = ''
+    if (watch?.dateMode === 'single' && watch.date) date = watch.date.format('YYYY-MM-DD')
+    else if (watch?.dateMode === 'range' && watch.dateRange && watch.dateRange.length === 2) {
+      date_start = watch.dateRange[0].format('YYYY-MM-DD')
+      date_end = watch.dateRange[1].format('YYYY-MM-DD')
+    }
+    let alive = true
+    const timer = setTimeout(() => {
+      setOnewayHeatLoading(true)
+      Promise.all(origins.map((label) => api.flightHeatmap({
+        from: cityNameOf(label),
+        product,
+        date,
+        date_start,
+        date_end,
+      }))).then((list) => {
+        if (!alive) return
+        setOnewayHeat(list)
+        setOnewayHeatErr('')
+      }).catch((err) => {
+        if (!alive) return
+        setOnewayHeatErr(err.message || '目的地热力图没有加载出来')
+      }).finally(() => {
+        if (alive) setOnewayHeatLoading(false)
+      })
+    }, 250)
+    return () => {
+      alive = false
+      clearTimeout(timer)
+    }
+    // heatKey 已覆盖出发地、日期和档位；watch / routeOrigins 只在回调里读当前值
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [heatKey])
 
   const optProps = (list) => ({
     showSearch: true,
@@ -4936,7 +5067,6 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
           date: dayjs(req.date),
         }
     setQueryKind(round ? 'round' : 'oneway')
-    setOnewayView('list')
     setRouteOrigins([req.from])
     routeOriginDefaulted.current = true
     form.setFieldsValue(values)
@@ -4948,6 +5078,10 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
   const onewayCards = useMemo(
     () => (queryKind === 'oneway' && result && !result.round ? onewayReachCards(result.records, result.returns) : []),
     [queryKind, result],
+  )
+  const heatCards = useMemo(
+    () => (queryKind === 'oneway' ? cardsFromHeatmap(onewayHeat) : []),
+    [queryKind, onewayHeat],
   )
   const onewayCardByPair = useMemo(
     () => new Map(onewayCards.map((card) => [`${card.fromCity}|${card.city}`, card])),
@@ -5798,6 +5932,65 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
           </Row>
         </Form>
         {errMsg && <Alert style={{ marginTop: 8 }} type="error" showIcon message={errMsg} />}
+        {queryKind === 'oneway' && (onewayHeat || onewayHeatLoading || onewayHeatErr) && (() => {
+          const heatMeta = onewayHeat?.[0]
+          const heatFroms = [...new Set((onewayHeat || []).map((item) => item.origin?.city).filter(Boolean))].join('、')
+          const heatSpan = !heatMeta ? '' : heatMeta.unbounded
+            ? `未来 ${heatMeta.span_days} 天（${heatMeta.date_start} – ${heatMeta.date_end}）`
+            : heatMeta.date_start === heatMeta.date_end
+              ? heatMeta.date_start
+              : `${heatMeta.date_start} – ${heatMeta.date_end}${heatMeta.truncated ? '（区间较长，只显示前 92 天）' : ''}`
+          const heat666 = heatCards.filter((card) => card.kind === '666').length
+          const heat2666 = heatCards.filter((card) => card.kind === '2666').length
+          return (
+            <div style={{ marginTop: 16 }}>
+              <div className="weekend-summary">
+                <div>
+                  <div className="weekend-summary-title">{heatFroms || '所选城市'} 出发 · 可以去这些地方</div>
+                  <div className="weekend-summary-sub">
+                    {heatSpan}
+                    {heatCards.length ? <> · <b>{heatCards.length}</b> 个目的地 · 666 可用 <b>{heat666}</b> 城 / 2666 专享 <b>{heat2666}</b> 城</> : ''}
+                  </div>
+                </div>
+                <span className="weekend-summary-note">热力是这段日期里的出发班次。同一航班在秋航季和冬春表里只算一次。</span>
+              </div>
+              {onewayHeatErr ? <Alert style={{ marginBottom: 12 }} type="error" showIcon message={onewayHeatErr} /> : null}
+              {heatCards.length > 0 && (
+                <div className="date-quick" style={{ marginBottom: 10 }}>
+                  {[
+                    { key: 'all', label: `全部可达（${heatCards.length}）` },
+                    { key: '666', label: `仅看 666 可用（${heat666}）` },
+                    { key: '2666', label: `仅看 2666 专享（${heat2666}）` },
+                  ].map((item) => (
+                    <Button
+                      key={item.key}
+                      size="small"
+                      type={reachFilter === item.key ? 'primary' : 'default'}
+                      onClick={() => setReachFilter(item.key)}
+                    >
+                      {item.label}
+                    </Button>
+                  ))}
+                </div>
+              )}
+              {onewayHeatLoading && !heatCards.length ? <Spin /> : null}
+              {!onewayHeatLoading && !onewayHeatErr && !heatCards.length ? (
+                <Empty description="这段日期没有可兑的目的地" />
+              ) : heatCards.length > 0 ? (
+                <WeekendReachMap
+                  cards={heatCards}
+                  filter={reachFilter}
+                  variant="overview"
+                  onPick={(card) => {
+                    const label = matchOriginLabel(linkOpts.to, card.city) || card.city
+                    form.setFieldsValue({ to: label })
+                    submit({ ...form.getFieldsValue(), to: label })
+                  }}
+                />
+              ) : null}
+            </div>
+          )
+        })()}
         {queryKind === 'weekend' && weekendCards && (
           <div style={{ marginTop: 16 }}>
             <div className="weekend-summary">
@@ -5934,17 +6127,6 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
           )}
           {queryKind === 'oneway' && !result.round && onewayCards.length > 0 && (
             <>
-              {onewayMulti && <div className="weekend-view-switch">
-                <button type="button" className={onewayView === 'list' ? 'is-on' : ''} onClick={() => setOnewayView('list')}>
-                  <TasksIcon size={16} />
-                  航线排期列表
-                </button>
-                <button type="button" className={onewayView === 'map' ? 'is-on' : ''} onClick={() => setOnewayView('map')}>
-                  <MapIcon size={16} />
-                  全国可去地图
-                  <span className="weekend-heat-badge">热力视效</span>
-                </button>
-              </div>}
               {(() => {
                 const cities = new Set(onewayCards.map((card) => card.city))
                 const tierCities = (kind) => new Set(onewayCards.filter((card) => reachKindOf(card, 'oneway') === kind).map((card) => card.city)).size
@@ -5999,21 +6181,8 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
                   <Tag closable onClose={() => setOnewayCity('')} style={{ marginInlineEnd: 0 }}>只看 {onewayCity}</Tag>
                 ) : null}
               </div>
-              {onewayView === 'map' && onewayMulti ? (
-                <WeekendReachMap
-                  cards={onewayCards}
-                  filter={reachFilter}
-                  tripFilter={onewayTrip}
-                  variant="oneway"
-                  onPick={(card) => {
-                    setOnewayCity(card.city)
-                    if (card.trip !== 'back') setOnewayView('list')
-                  }}
-                />
-              ) : null}
             </>
           )}
-          {(queryKind !== 'oneway' || result.round || onewayView !== 'map' || !onewayMulti) && (
           <Table
             rowKey="key"
             size="small"
@@ -6024,7 +6193,6 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
             rowSelection={{ selectedRowKeys: selKeys, onChange: setSelKeys }}
             locale={{ emptyText: <Empty description="没有符合条件的航班，换个条件试试" /> }}
           />
-          )}
         </Card>
       )}
 

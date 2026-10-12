@@ -351,6 +351,72 @@ def test_query_date_range():
         )
 
 
+def test_destination_heatmap_szx_winter_and_summer():
+    """单程热力按出发地和日期列出目的地：冬春用 plus_winter，秋航季尾仍能看到主表目的地。"""
+    winter = sediment.destination_heatmap(from_city="SZX", date_str="2026-10-26")
+    assert winter["origin"]["city"] == "深圳" and winter["origin"]["iata"] == "SZX"
+    assert winter["date_start"] == winter["date_end"] == "2026-10-26"
+    assert winter["stats"]["destinations"] >= 20
+    assert winter["stats"]["666"] >= 1 and winter["stats"]["2666"] >= 1
+    tna = next(item for item in winter["destinations"] if item["city"] == "济南")
+    assert tna["kind"] == "666"
+    assert tna["by_date"] == [{
+        "date": "2026-10-26",
+        "flights": 1,
+        "666": 1,
+        "2666": 1,
+        "flight_nos": ["Y87903"],
+    }]
+    assert tna["flights"] == 1 and tna["departures"] == 1
+    summer = sediment.destination_heatmap(from_city="深圳", date_str="2026-10-12")
+    assert any(item["city"] == "兴义" for item in summer["destinations"])
+    assert all("Y87903" not in row["flight_nos"] for item in summer["destinations"] for row in item["by_date"])
+
+
+def test_destination_heatmap_does_not_double_count_winter_overlap():
+    """同一天秋航季和冬春表都有的航班只计一次。"""
+    rows = sediment.query(from_city="济南", to_city="重庆", flight_no="HU717", date_str="2026-10-12", limit=10)
+    assert len(rows) == 2
+    assert {row.get("season") for row in rows} == {None, "2026冬春"}
+    data = sediment.destination_heatmap(from_city="TNA", date_str="2026-10-12")
+    ckg = next(item for item in data["destinations"] if item["city"] == "重庆")
+    assert ckg["by_date"][0]["flight_nos"].count("HU717") == 1
+    assert ckg["by_date"][0]["flights"] == len(set(ckg["by_date"][0]["flight_nos"]))
+
+
+def test_destination_heatmap_date_range_tier_block_and_window():
+    """区间按日展开；666 屏蔽日不计 666；未选日期给 30 天，超长区间截断。"""
+    span = sediment.destination_heatmap(from_city="深圳", date_start="2026-10-24", date_end="2026-10-26")
+    assert span["truncated"] is False and span["span_days"] == 3
+    pek = next(item for item in span["destinations"] if item["city"] == "北京")
+    assert [row["date"] for row in pek["by_date"]] == ["2026-10-24", "2026-10-25", "2026-10-26"]
+    assert pek["departures"] == sum(row["flights"] for row in pek["by_date"])
+    assert pek["flights"] <= pek["departures"]
+
+    blocked = sediment.destination_heatmap(from_city="深圳", date_str="2026-10-05", product="666")
+    assert blocked["destinations"] == []
+    mixed = sediment.destination_heatmap(from_city="深圳", date_str="2026-10-05")
+    assert mixed["destinations"]
+    assert all(item["kind"] == "2666" for item in mixed["destinations"])
+    assert all(row["666"] == 0 and row["2666"] >= 1 for item in mixed["destinations"] for row in item["by_date"])
+    only = sediment.destination_heatmap(from_city="SZX", date_str="2026-10-26", product="666")
+    assert only["destinations"] and all(item["kind"] == "666" for item in only["destinations"])
+
+    import datetime
+    opened = sediment.destination_heatmap(from_city="", today=datetime.date(2026, 10, 12))
+    assert opened["unbounded"] is True
+    assert opened["origin"]["iata"] == "SZX"
+    assert opened["date_start"] == "2026-10-12" and opened["date_end"] == "2026-11-10"
+    assert opened["span_days"] == 30
+    long = sediment.destination_heatmap(from_city="SZX", date_start="2026-10-01", date_end="2027-03-01")
+    assert long["truncated"] is True and long["span_days"] == 92 and long["date_end"] == "2026-12-31"
+
+    with pytest.raises(ValueError):
+        sediment.destination_heatmap(from_city="SZX", date_str="2026-13-01")
+    with pytest.raises(ValueError):
+        sediment.destination_heatmap(from_city="SZX", date_start="2026-11-02", date_end="2026-10-26")
+
+
 def test_options_linkage():
     """出发/到达联动选项：以「当前可搜到的航线」两端城市为依据。"""
     # 深圳出发 → 到达下拉应有杭州（底表存在 SZX->HGH）

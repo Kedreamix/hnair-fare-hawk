@@ -394,6 +394,232 @@ def options(
     return {"from_options": fmt(origins), "to_options": fmt(dests)}
 
 
+HEATMAP_OPEN_DAYS = 30
+HEATMAP_MAX_DAYS = 92
+WINTER_SEASON = "2026冬春"
+WINTER_START = date(2026, 10, 25)
+
+
+def _parse_iso_day(value: str) -> date:
+    try:
+        return date.fromisoformat(str(value).strip())
+    except ValueError as exc:
+        raise ValueError(f"日期格式应为 YYYY-MM-DD：{value}") from exc
+
+
+def _heatmap_window(
+    date_str: str = "",
+    date_start: str = "",
+    date_end: str = "",
+    today: date | None = None,
+) -> tuple:
+    """返回 (days, unbounded, truncated)。未指定日期时从 today 起看 30 天。"""
+    today = today or date.today()
+    if date_str:
+        return [_parse_iso_day(date_str)], False, False
+    if date_start or date_end:
+        start = _parse_iso_day(date_start or date_end)
+        end = _parse_iso_day(date_end or date_start)
+        if end < start:
+            raise ValueError("结束日期不能早于开始日期")
+        truncated = False
+        if (end - start).days + 1 > HEATMAP_MAX_DAYS:
+            end = start + timedelta(days=HEATMAP_MAX_DAYS - 1)
+            truncated = True
+        days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+        return days, False, truncated
+    days = [today + timedelta(days=i) for i in range(HEATMAP_OPEN_DAYS)]
+    return days, True, False
+
+
+def _heatmap_tiers(record: Dict[str, Any], day: str, product: str | None) -> List[str]:
+    """当天仍可兑的档位。屏蔽区间内的档位去掉；指定档位时只留该档。"""
+    tiers = [t for t in product_tiers(record.get("product")) if t in ("666", "2666")]
+    wanted = product_tiers(product)
+    if wanted:
+        tiers = [t for t in tiers if t in wanted]
+    return [t for t in tiers if not date_in_blocks(tier_blocks(t), day)]
+
+
+def _winter_row(record: Dict[str, Any]) -> bool:
+    return str(record.get("season") or "") == WINTER_SEASON
+
+
+def _prefer_heatmap_row(new: Dict[str, Any], old: Dict[str, Any], day: date) -> bool:
+    """同一航班同一天只留一条：冬春日起优先冬春表，之前优先秋航季表。"""
+    want_winter = day >= WINTER_START
+    new_winter = _winter_row(new)
+    old_winter = _winter_row(old)
+    if new_winter == old_winter:
+        return False
+    return new_winter if want_winter else not new_winter
+
+
+def destination_heatmap(
+    from_city: str = "",
+    product: str | None = None,
+    date_str: str = "",
+    date_start: str = "",
+    date_end: str = "",
+    today: date | None = None,
+) -> Dict[str, Any]:
+    """出发地在日期范围内能飞到的每个目的地，按日给出班次，并区分 666 / 2666。
+
+    数据来自 load_records()：秋航季 flights_normalized.json，以及
+    plus_winter_2026.json / plus_winter_2026_extra.json。同一航班、同一天若两表都命中，
+    只计一次（2026-10-25 及以后用冬春表，之前用秋航季表）。
+    未传日期时统计从 today 起的 30 天；区间超过 92 天时只取前 92 天。
+    """
+    days, unbounded, truncated = _heatmap_window(date_str, date_start, date_end, today)
+    origin_query = str(from_city or "").strip() or "深圳"
+    window_start = days[0].isoformat()
+    window_end = days[-1].isoformat()
+    chosen: Dict[tuple, Dict[str, Any]] = {}
+
+    for rec in load_records():
+        origin = rec.get("origin") or {}
+        dest = rec.get("dest") or {}
+        if not _airport_matches(origin, origin_query):
+            continue
+        if product and not matches_product(rec, product):
+            continue
+        if not matches_date_in_range(rec, window_start, window_end):
+            continue
+        flight_no = str(rec.get("flight_no") or "").strip().upper()
+        dest_city = str(dest.get("city") or "").strip()
+        dest_iata = str(dest.get("iata") or "").strip().upper()
+        if not flight_no or not dest_city or not dest_iata:
+            continue
+        for day in days:
+            day_s = day.isoformat()
+            if not matches_date(rec, day_s):
+                continue
+            tiers = _heatmap_tiers(rec, day_s, product)
+            if not tiers:
+                continue
+            key = (dest_city, dest_iata, flight_no, day_s)
+            slot = chosen.get(key)
+            if slot is None or _prefer_heatmap_row(rec, slot["rec"], day):
+                chosen[key] = {"rec": rec, "tiers": list(tiers), "dest": dest}
+
+    origin_hits: Dict[str, Dict[str, Any]] = {}
+    for slot in chosen.values():
+        origin = (slot["rec"].get("origin") or {})
+        origin_iata = str(origin.get("iata") or "").strip().upper()
+        if not origin_iata:
+            continue
+        bucket = origin_hits.setdefault(origin_iata, {"n": 0, "origin": origin})
+        bucket["n"] += 1
+
+    by_city: Dict[str, Dict[str, Any]] = {}
+    for (dest_city, dest_iata, flight_no, day_s), slot in chosen.items():
+        city = by_city.get(dest_city)
+        if city is None:
+            city = {
+                "city": dest_city,
+                "iata_counts": {},
+                "airports": {},
+                "flight_nos": set(),
+                "by_date": {},
+                "samples": {},
+            }
+            by_city[dest_city] = city
+        city["iata_counts"][dest_iata] = city["iata_counts"].get(dest_iata, 0) + 1
+        city["airports"][dest_iata] = str((slot["dest"] or {}).get("airport") or "")
+        city["flight_nos"].add(flight_no)
+        row = city["by_date"].get(day_s)
+        if row is None:
+            row = {"date": day_s, "flight_nos": set(), "666": 0, "2666": 0}
+            city["by_date"][day_s] = row
+        if flight_no not in row["flight_nos"]:
+            row["flight_nos"].add(flight_no)
+            if "666" in slot["tiers"]:
+                row["666"] += 1
+            if "2666" in slot["tiers"]:
+                row["2666"] += 1
+        tiers = slot["tiers"]
+        product_name = "/".join(t for t in ("666", "2666") if t in tiers)
+        rec = slot["rec"]
+        prev = city["samples"].get(flight_no)
+        if prev is None:
+            city["samples"][flight_no] = {
+                "flight_no": flight_no,
+                "dep_time": str(rec.get("dep_time") or ""),
+                "arr_time": str(rec.get("arr_time") or ""),
+                "product": product_name,
+                "dest_iata": dest_iata,
+            }
+        else:
+            parts = set(str(prev.get("product") or "").split("/")) | set(product_name.split("/"))
+            parts.discard("")
+            prev["product"] = "/".join(t for t in ("666", "2666") if t in parts)
+            dep = str(rec.get("dep_time") or "")
+            if dep and (not prev.get("dep_time") or dep < prev["dep_time"]):
+                prev["dep_time"] = dep
+                prev["arr_time"] = str(rec.get("arr_time") or "")
+                prev["dest_iata"] = dest_iata
+
+    destinations: List[Dict[str, Any]] = []
+    for city in by_city.values():
+        by_date = []
+        departures = 0
+        has_666 = False
+        for day_s in sorted(city["by_date"]):
+            row = city["by_date"][day_s]
+            nos = sorted(row["flight_nos"])
+            departures += len(nos)
+            has_666 = has_666 or row["666"] > 0
+            by_date.append({
+                "date": day_s,
+                "flights": len(nos),
+                "666": row["666"],
+                "2666": row["2666"],
+                "flight_nos": nos,
+            })
+        primary = max(city["iata_counts"], key=lambda iata: (city["iata_counts"][iata], iata))
+        samples = sorted(city["samples"].values(), key=lambda item: (item.get("dep_time") or "99:99", item["flight_no"]))
+        destinations.append({
+            "city": city["city"],
+            "iata": primary,
+            "airport": city["airports"].get(primary) or "",
+            "iatas": sorted(city["iata_counts"]),
+            "flights": len(city["flight_nos"]),
+            "departures": departures,
+            "kind": "666" if has_666 else "2666",
+            "by_date": by_date,
+            "samples": samples[:4],
+        })
+    destinations.sort(key=lambda item: (-int(item["departures"]), item["city"]))
+
+    if origin_hits:
+        origin_iata = max(origin_hits, key=lambda iata: (origin_hits[iata]["n"], iata))
+        origin = origin_hits[origin_iata]["origin"]
+        origin_view = {
+            "city": str(origin.get("city") or origin_query),
+            "iata": origin_iata,
+            "airport": str(origin.get("airport") or ""),
+        }
+    else:
+        origin_view = {"city": origin_query, "iata": "", "airport": ""}
+
+    return {
+        "origin": origin_view,
+        "date_start": window_start,
+        "date_end": window_end,
+        "span_days": len(days),
+        "unbounded": unbounded,
+        "truncated": truncated,
+        "destinations": destinations,
+        "stats": {
+            "destinations": len(destinations),
+            "flights": sum(int(item["flights"]) for item in destinations),
+            "departures": sum(int(item["departures"]) for item in destinations),
+            "666": sum(1 for item in destinations if item["kind"] == "666"),
+            "2666": sum(1 for item in destinations if item["kind"] == "2666"),
+        },
+    }
+
+
 def meta() -> Dict[str, Any]:
     """元信息：版本、总数、档位/来源分布、城市与机场列表（供前端筛选器）。"""
     records = load_records()

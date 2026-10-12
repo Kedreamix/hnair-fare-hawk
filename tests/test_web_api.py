@@ -453,6 +453,29 @@ def test_polling_save_and_clamp(api_server):
     assert poll["night_min_sec"] == 10 and poll["night_max_sec"] == 30
 
 
+def test_flights_heatmap_one_way_destinations(api_server):
+    """单程热力接口：深圳在冬春日返回目的地、坐标，以及按日的 666/2666 班次。"""
+    base, _ = api_server
+    r = requests.get(f"{base}/api/flights/heatmap", params={"from": "SZX", "date": "2026-10-26"}, timeout=10)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["origin"]["iata"] == "SZX"
+    assert body["origin"]["lat"] and body["origin"]["lon"]
+    assert body["stats"]["destinations"] >= 20
+    assert body["stats"]["666"] >= 1 and body["stats"]["2666"] >= 1
+    tna = next(item for item in body["destinations"] if item["city"] == "济南")
+    assert tna["lat"] and tna["lon"]
+    assert tna["by_date"][0]["flight_nos"] == ["Y87903"]
+    assert tna["by_date"][0]["666"] == 1 and tna["by_date"][0]["2666"] == 1
+    summer = requests.get(f"{base}/api/flights/heatmap", params={"from": "深圳", "date": "2026-10-12"}, timeout=10)
+    assert summer.status_code == 200
+    xingyi = next(item for item in summer.json()["destinations"] if item["city"] == "兴义")
+    assert xingyi["iata"] == "ACX" and xingyi["lat"] and xingyi["lon"]
+    bad = requests.get(f"{base}/api/flights/heatmap", params={"from": "SZX", "date": "bad-day"}, timeout=10)
+    assert bad.status_code == 400 and bad.json()["ok"] is False
+
+
 def test_history_records_expose_extra_fields(api_server):
     """history 透传档位/起降时刻/余票字段（旧记录缺失时前端可防空）。"""
     base, tmp = api_server

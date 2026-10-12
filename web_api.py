@@ -58,7 +58,7 @@ from app import (  # noqa: E402
 )
 from backend.notifier import fake_price_hit_payload, send_test_alert, test_feishu  # noqa: E402
 from backend.fetcher import TokenExpiredError, fetch_price_status
-from backend.route_map import load_china, network as route_network  # noqa: E402
+from backend.route_map import load_airports, load_china, network as route_network  # noqa: E402
 import backend.sediment as sediment  # noqa: E402
 import backend.observations as observations  # noqa: E402
 import backend.feishu_ws as feishu_ws  # noqa: E402
@@ -558,6 +558,8 @@ class Handler(BaseHTTPRequestHandler):
                 })
             elif path == "/api/flights/prices":
                 self._flights_prices(parsed.query)
+            elif path == "/api/flights/heatmap":
+                self._flights_heatmap(parsed.query)
             elif path == "/api/map/network":
                 _send_json(self, 200, route_network(_get_qs(qs, "product") or None))
             elif path == "/api/map/china":
@@ -573,6 +575,32 @@ class Handler(BaseHTTPRequestHandler):
                 _serve_static(self, path)
         except Exception as exc:  # noqa: BLE001
             _send_json(self, 500, {"ok": False, "error": str(exc)})
+
+    def _flights_heatmap(self, qs: str) -> None:
+        """单程目的地热力：选定出发地和日期范围，按日汇总每个可达城市的班次与 666/2666。"""
+        try:
+            payload = sediment.destination_heatmap(
+                from_city=_get_qs(qs, "from"),
+                product=_get_qs(qs, "product") or None,
+                date_str=_get_qs(qs, "date"),
+                date_start=_get_qs(qs, "date_start"),
+                date_end=_get_qs(qs, "date_end"),
+            )
+        except ValueError as exc:
+            _send_json(self, 400, {"ok": False, "error": str(exc)})
+            return
+        coords = load_airports()
+
+        def _pin(node: Dict[str, Any]) -> None:
+            slot = coords.get(str(node.get("iata") or "").strip().upper()) or {}
+            if slot.get("lat") is not None and slot.get("lon") is not None:
+                node["lat"] = slot["lat"]
+                node["lon"] = slot["lon"]
+
+        _pin(payload.get("origin") or {})
+        for dest in payload.get("destinations") or []:
+            _pin(dest)
+        _send_json(self, 200, {"ok": True, **payload})
 
     def _flights_prices(self, qs: str) -> None:
         """航线低价查询：normal=原价（日历价），plus=优惠价（PLUS 会员价档，通常 199）。
