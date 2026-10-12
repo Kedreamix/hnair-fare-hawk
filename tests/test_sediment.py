@@ -373,6 +373,30 @@ def test_destination_heatmap_szx_winter_and_summer():
     assert all("Y87903" not in row["flight_nos"] for item in summer["destinations"] for row in item["by_date"])
 
 
+def test_destination_heatmap_direction_flags():
+    """相对出发地标出去程、回程：有去有回 / 只有去程 / 只有回程，回程班号不计入去程。"""
+    data = sediment.destination_heatmap(from_city="SZX", date_str="2026-10-26")
+    stats = data["stats"]
+    assert stats["both"] + stats["outbound_only"] + stats["inbound_only"] == stats["destinations"]
+    assert stats["both"] >= 1 and stats["outbound_only"] >= 1 and stats["inbound_only"] >= 1
+
+    tna = next(item for item in data["destinations"] if item["city"] == "济南")
+    assert tna["has_outbound"] is True and tna["has_inbound"] is True and tna["direction"] == "both"
+    assert tna["inbound_flights"] >= 1 and tna["inbound_departures"] >= tna["inbound_flights"]
+    assert "Y87904" in {sample["flight_no"] for sample in tna["inbound_samples"]}
+    assert all("Y87904" not in row["flight_nos"] for row in tna["by_date"])
+
+    zhoushan = next(item for item in data["destinations"] if item["city"] == "舟山")
+    assert zhoushan["has_outbound"] is True and zhoushan["has_inbound"] is False
+    assert zhoushan["direction"] == "out" and zhoushan["inbound_flights"] == 0 and zhoushan["inbound_departures"] == 0
+
+    dalian = next(item for item in data["destinations"] if item["city"] == "大连")
+    assert dalian["has_outbound"] is False and dalian["has_inbound"] is True and dalian["direction"] == "back"
+    assert dalian["flights"] == 0 and dalian["departures"] == 0 and dalian["by_date"] == []
+    assert dalian["iata"] == "DLC" and dalian["inbound_departures"] >= 1
+    assert any(sample["flight_no"] == "HU7776" for sample in dalian["inbound_samples"])
+
+
 def test_destination_heatmap_does_not_double_count_winter_overlap():
     """同一天秋航季和冬春表都有的航班只计一次。"""
     rows = sediment.query(from_city="济南", to_city="重庆", flight_no="HU717", date_str="2026-10-12", limit=10)

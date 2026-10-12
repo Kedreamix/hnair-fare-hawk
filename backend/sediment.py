@@ -463,11 +463,12 @@ def destination_heatmap(
     date_end: str = "",
     today: date | None = None,
 ) -> Dict[str, Any]:
-    """出发地在日期范围内能飞到的每个目的地，按日给出班次，并区分 666 / 2666。
+    """出发地在日期范围内能飞到、或能飞回的每个城市，按日给出班次，并区分 666 / 2666。
 
     数据来自 load_records()：秋航季 flights_normalized.json，以及
-    plus_winter_2026.json / plus_winter_2026_extra.json。同一航班、同一天若两表都命中，
+    plus_winter_2026.json / plus_winter_2026_extra.json。同一航班、同一天、同一方向若两表都命中，
     只计一次（2026-10-25 及以后用冬春表，之前用秋航季表）。
+    has_outbound 表示窗口内有出发地→该城市的班，has_inbound 表示有该城市→出发地的班。
     未传日期时统计从 today 起的 30 天；区间超过 92 天时只取前 92 天。
     """
     days, unbounded, truncated = _heatmap_window(date_str, date_start, date_end, today)
@@ -479,17 +480,24 @@ def destination_heatmap(
     for rec in load_records():
         origin = rec.get("origin") or {}
         dest = rec.get("dest") or {}
-        if not _airport_matches(origin, origin_query):
-            continue
         if product and not matches_product(rec, product):
             continue
         if not matches_date_in_range(rec, window_start, window_end):
             continue
-        flight_no = str(rec.get("flight_no") or "").strip().upper()
-        dest_city = str(dest.get("city") or "").strip()
-        dest_iata = str(dest.get("iata") or "").strip().upper()
-        if not flight_no or not dest_city or not dest_iata:
+        out_leg = _airport_matches(origin, origin_query)
+        in_leg = _airport_matches(dest, origin_query)
+        if out_leg == in_leg:
             continue
+        far = dest if out_leg else origin
+        home = origin if out_leg else dest
+        if _airport_matches(far, origin_query):
+            continue
+        flight_no = str(rec.get("flight_no") or "").strip().upper()
+        far_city = str(far.get("city") or "").strip()
+        far_iata = str(far.get("iata") or "").strip().upper()
+        if not flight_no or not far_city or not far_iata:
+            continue
+        leg = "out" if out_leg else "in"
         for day in days:
             day_s = day.isoformat()
             if not matches_date(rec, day_s):
@@ -497,57 +505,72 @@ def destination_heatmap(
             tiers = _heatmap_tiers(rec, day_s, product)
             if not tiers:
                 continue
-            key = (dest_city, dest_iata, flight_no, day_s)
+            key = (leg, far_city, far_iata, flight_no, day_s)
             slot = chosen.get(key)
             if slot is None or _prefer_heatmap_row(rec, slot["rec"], day):
-                chosen[key] = {"rec": rec, "tiers": list(tiers), "dest": dest}
+                chosen[key] = {"rec": rec, "tiers": list(tiers), "far": far, "home": home, "leg": leg}
 
     origin_hits: Dict[str, Dict[str, Any]] = {}
     for slot in chosen.values():
-        origin = (slot["rec"].get("origin") or {})
-        origin_iata = str(origin.get("iata") or "").strip().upper()
+        home = slot.get("home") or {}
+        origin_iata = str(home.get("iata") or "").strip().upper()
         if not origin_iata:
             continue
-        bucket = origin_hits.setdefault(origin_iata, {"n": 0, "origin": origin})
+        bucket = origin_hits.setdefault(origin_iata, {"n": 0, "origin": home})
         bucket["n"] += 1
 
     by_city: Dict[str, Dict[str, Any]] = {}
-    for (dest_city, dest_iata, flight_no, day_s), slot in chosen.items():
-        city = by_city.get(dest_city)
+    for (leg, far_city, far_iata, flight_no, day_s), slot in chosen.items():
+        city = by_city.get(far_city)
         if city is None:
             city = {
-                "city": dest_city,
-                "iata_counts": {},
+                "city": far_city,
+                "out_iata_counts": {},
+                "in_iata_counts": {},
                 "airports": {},
-                "flight_nos": set(),
+                "out_flight_nos": set(),
+                "in_flight_nos": set(),
                 "by_date": {},
+                "in_days": {},
                 "samples": {},
+                "in_samples": {},
+                "has_666": False,
             }
-            by_city[dest_city] = city
-        city["iata_counts"][dest_iata] = city["iata_counts"].get(dest_iata, 0) + 1
-        city["airports"][dest_iata] = str((slot["dest"] or {}).get("airport") or "")
-        city["flight_nos"].add(flight_no)
-        row = city["by_date"].get(day_s)
-        if row is None:
-            row = {"date": day_s, "flight_nos": set(), "666": 0, "2666": 0}
-            city["by_date"][day_s] = row
-        if flight_no not in row["flight_nos"]:
-            row["flight_nos"].add(flight_no)
-            if "666" in slot["tiers"]:
-                row["666"] += 1
-            if "2666" in slot["tiers"]:
-                row["2666"] += 1
+            by_city[far_city] = city
+        if "666" in slot["tiers"]:
+            city["has_666"] = True
+        city["airports"][far_iata] = str((slot.get("far") or {}).get("airport") or "")
+        if leg == "out":
+            city["out_iata_counts"][far_iata] = city["out_iata_counts"].get(far_iata, 0) + 1
+            city["out_flight_nos"].add(flight_no)
+            row = city["by_date"].get(day_s)
+            if row is None:
+                row = {"date": day_s, "flight_nos": set(), "666": 0, "2666": 0}
+                city["by_date"][day_s] = row
+            if flight_no not in row["flight_nos"]:
+                row["flight_nos"].add(flight_no)
+                if "666" in slot["tiers"]:
+                    row["666"] += 1
+                if "2666" in slot["tiers"]:
+                    row["2666"] += 1
+            sample_box = city["samples"]
+        else:
+            city["in_iata_counts"][far_iata] = city["in_iata_counts"].get(far_iata, 0) + 1
+            city["in_flight_nos"].add(flight_no)
+            city["in_days"].setdefault(day_s, set()).add(flight_no)
+            sample_box = city["in_samples"]
         tiers = slot["tiers"]
         product_name = "/".join(t for t in ("666", "2666") if t in tiers)
         rec = slot["rec"]
-        prev = city["samples"].get(flight_no)
+        prev = sample_box.get(flight_no)
         if prev is None:
-            city["samples"][flight_no] = {
+            sample_box[flight_no] = {
                 "flight_no": flight_no,
                 "dep_time": str(rec.get("dep_time") or ""),
                 "arr_time": str(rec.get("arr_time") or ""),
                 "product": product_name,
-                "dest_iata": dest_iata,
+                "dest_iata": far_iata,
+                "leg": leg,
             }
         else:
             parts = set(str(prev.get("product") or "").split("/")) | set(product_name.split("/"))
@@ -557,18 +580,16 @@ def destination_heatmap(
             if dep and (not prev.get("dep_time") or dep < prev["dep_time"]):
                 prev["dep_time"] = dep
                 prev["arr_time"] = str(rec.get("arr_time") or "")
-                prev["dest_iata"] = dest_iata
+                prev["dest_iata"] = far_iata
 
     destinations: List[Dict[str, Any]] = []
     for city in by_city.values():
         by_date = []
         departures = 0
-        has_666 = False
         for day_s in sorted(city["by_date"]):
             row = city["by_date"][day_s]
             nos = sorted(row["flight_nos"])
             departures += len(nos)
-            has_666 = has_666 or row["666"] > 0
             by_date.append({
                 "date": day_s,
                 "flights": len(nos),
@@ -576,20 +597,36 @@ def destination_heatmap(
                 "2666": row["2666"],
                 "flight_nos": nos,
             })
-        primary = max(city["iata_counts"], key=lambda iata: (city["iata_counts"][iata], iata))
+        has_outbound = bool(city["out_flight_nos"])
+        has_inbound = bool(city["in_flight_nos"])
+        if has_outbound and has_inbound:
+            direction = "both"
+        elif has_inbound:
+            direction = "back"
+        else:
+            direction = "out"
+        iata_counts = city["out_iata_counts"] or city["in_iata_counts"]
+        primary = max(iata_counts, key=lambda iata: (iata_counts[iata], iata))
         samples = sorted(city["samples"].values(), key=lambda item: (item.get("dep_time") or "99:99", item["flight_no"]))
+        inbound_samples = sorted(city["in_samples"].values(), key=lambda item: (item.get("dep_time") or "99:99", item["flight_no"]))
         destinations.append({
             "city": city["city"],
             "iata": primary,
             "airport": city["airports"].get(primary) or "",
-            "iatas": sorted(city["iata_counts"]),
-            "flights": len(city["flight_nos"]),
+            "iatas": sorted(set(city["out_iata_counts"]) | set(city["in_iata_counts"])),
+            "flights": len(city["out_flight_nos"]),
             "departures": departures,
-            "kind": "666" if has_666 else "2666",
+            "inbound_flights": len(city["in_flight_nos"]),
+            "inbound_departures": sum(len(nos) for nos in city["in_days"].values()),
+            "has_outbound": has_outbound,
+            "has_inbound": has_inbound,
+            "direction": direction,
+            "kind": "666" if city["has_666"] else "2666",
             "by_date": by_date,
             "samples": samples[:4],
+            "inbound_samples": inbound_samples[:4],
         })
-    destinations.sort(key=lambda item: (-int(item["departures"]), item["city"]))
+    destinations.sort(key=lambda item: (-int(item["departures"]) - int(item["inbound_departures"]), item["city"]))
 
     if origin_hits:
         origin_iata = max(origin_hits, key=lambda iata: (origin_hits[iata]["n"], iata))
@@ -616,6 +653,9 @@ def destination_heatmap(
             "departures": sum(int(item["departures"]) for item in destinations),
             "666": sum(1 for item in destinations if item["kind"] == "666"),
             "2666": sum(1 for item in destinations if item["kind"] == "2666"),
+            "both": sum(1 for item in destinations if item["direction"] == "both"),
+            "outbound_only": sum(1 for item in destinations if item["direction"] == "out"),
+            "inbound_only": sum(1 for item in destinations if item["direction"] == "back"),
         },
     }
 

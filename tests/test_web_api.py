@@ -468,6 +468,11 @@ def test_flights_heatmap_one_way_destinations(api_server):
     assert tna["lat"] and tna["lon"]
     assert tna["by_date"][0]["flight_nos"] == ["Y87903"]
     assert tna["by_date"][0]["666"] == 1 and tna["by_date"][0]["2666"] == 1
+    assert tna["has_outbound"] is True and tna["has_inbound"] is True and tna["direction"] == "both"
+    dalian = next(item for item in body["destinations"] if item["city"] == "大连")
+    assert dalian["has_outbound"] is False and dalian["has_inbound"] is True and dalian["direction"] == "back"
+    assert dalian["lat"] and dalian["lon"]
+    assert body["stats"]["both"] >= 1 and body["stats"]["outbound_only"] >= 1 and body["stats"]["inbound_only"] >= 1
     summer = requests.get(f"{base}/api/flights/heatmap", params={"from": "深圳", "date": "2026-10-12"}, timeout=10)
     assert summer.status_code == 200
     xingyi = next(item for item in summer.json()["destinations"] if item["city"] == "兴义")

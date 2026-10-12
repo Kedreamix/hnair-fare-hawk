@@ -577,7 +577,7 @@ class Handler(BaseHTTPRequestHandler):
             _send_json(self, 500, {"ok": False, "error": str(exc)})
 
     def _flights_heatmap(self, qs: str) -> None:
-        """单程目的地热力：选定出发地和日期范围，按日汇总每个可达城市的班次与 666/2666。"""
+        """单程目的地热力：选定出发地和日期范围，按日汇总每个城市的去程/回程与 666/2666。"""
         try:
             payload = sediment.destination_heatmap(
                 from_city=_get_qs(qs, "from"),
