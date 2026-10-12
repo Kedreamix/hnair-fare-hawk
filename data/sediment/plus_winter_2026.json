@@ -2,7 +2,7 @@
  "season": "2026冬春",
  "title": "海航 PLUS 适用航班 26 冬春",
  "generated_at": "2026-10-11",
- "count": 1514,
+ "count": 1516,
  "records": [
   {
    "flight_no": "GS7514",
@@ -33246,7 +33246,7 @@
     "iata": "PEK"
    },
    "dep_time": "19:10",
-   "arr_time": "22:30",
+   "arr_time": "22:15",
    "days": [
     1,
     2,
@@ -33259,14 +33259,14 @@
    "effective_dates": [
     [
      "2026-10-25",
-     "2027-03-27"
+     "2026-11-12"
     ]
    ],
    "product": "2666",
    "product_conflict": false,
-   "source": "plus_winter_2026",
+   "source": "hna_able_airline_query",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网 ableAirlineQuery（仅2666）：19:10-22:15，每日，2026-10-25至2026-11-12"
   },
   {
    "flight_no": "HU7716",
@@ -33294,15 +33294,45 @@
    ],
    "effective_dates": [
     [
-     "2026-10-25",
+     "2026-10-26",
      "2027-03-27"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
-   "source": "hna_booking",
+   "source": "hna_able_airline_query",
    "season": "2026冬春",
-   "notes": "官网订票页核实：21:10 深圳宝安T3→00:25+1 北京首都T2，2026-10-25（周日）与 2026-10-26 均有班。生效起 2026-10-25，至 2027-03-27。与小红书全国冬春 PDF（10.25 起）一致。此前曾按 10-26 截图写成 10-26 起"
+   "notes": "官网 ableAirlineQuery（666+2666）：21:10-00:25，每日，2026-10-26至2027-03-27。订票页见过2026-10-25周日班，权益适用起日按资格名单"
+  },
+  {
+   "flight_no": "HU7375",
+   "carrier": "海南航空",
+   "origin": {
+    "city": "深圳",
+    "airport": "深圳宝安国际机场",
+    "iata": "SZX"
+   },
+   "dest": {
+    "city": "成都",
+    "airport": "成都天府国际机场",
+    "iata": "TFU"
+   },
+   "dep_time": "21:05",
+   "arr_time": "23:45",
+   "days": [
+    1
+   ],
+   "effective_dates": [
+    [
+     "2026-10-26",
+     "2026-10-26"
+    ]
+   ],
+   "product": "666/2666",
+   "product_conflict": false,
+   "source": "hna_able_airline_query",
+   "season": "2026冬春",
+   "notes": "官网 ableAirlineQuery：21:05-23:45，仅周一，2026-10-26"
   },
   {
    "flight_no": "HU7375",
@@ -33321,24 +33351,20 @@
    "arr_time": "23:45",
    "days": [
     1,
-    2,
-    3,
-    4,
     5,
-    6,
-    7
+    6
    ],
    "effective_dates": [
     [
-     "2026-10-25",
-     "2027-03-27"
+     "2026-10-30",
+     "2026-11-30"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
-   "source": "plus_winter_2026",
+   "source": "hna_able_airline_query",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网 ableAirlineQuery：21:05-23:45，班期一五六，2026-10-30至2026-11-30"
   },
   {
    "flight_no": "HU7357",
@@ -33367,14 +33393,50 @@
    "effective_dates": [
     [
      "2026-10-25",
+     "2026-11-01"
+    ]
+   ],
+   "product": "666/2666",
+   "product_conflict": false,
+   "source": "hna_able_airline_query",
+   "season": "2026冬春",
+   "notes": "官网 ableAirlineQuery：21:15-23:40，每日，2026-10-25至2026-11-01"
+  },
+  {
+   "flight_no": "HU7357",
+   "carrier": "海南航空",
+   "origin": {
+    "city": "深圳",
+    "airport": "深圳宝安国际机场",
+    "iata": "SZX"
+   },
+   "dest": {
+    "city": "重庆",
+    "airport": "重庆江北国际机场",
+    "iata": "CKG"
+   },
+   "dep_time": "21:15",
+   "arr_time": "23:40",
+   "days": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-11-02",
      "2027-03-27"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
-   "source": "plus_winter_2026",
+   "source": "hna_able_airline_query",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网 ableAirlineQuery：21:15-23:40，每日，2026-11-02至2027-03-27"
   },
   {
    "flight_no": "PN6230",
@@ -33426,57 +33488,26 @@
     "iata": "HRB"
    },
    "dep_time": "06:40",
-   "arr_time": "14:00",
+   "arr_time": "13:55",
    "days": [
     1,
     2,
     3,
-    4,
     5,
     6,
     7
    ],
    "effective_dates": [
     [
-     "2026-10-25",
-     "2027-03-27"
+     "2026-10-26",
+     "2026-12-23"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
-   "source": "plus_winter_2026",
+   "source": "hna_able_airline_query",
    "season": "2026冬春",
-   "notes": null
-  },
-  {
-   "flight_no": "HU7763",
-   "carrier": "海南航空",
-   "origin": {
-    "city": "深圳",
-    "airport": "深圳宝安国际机场",
-    "iata": "SZX"
-   },
-   "dest": {
-    "city": "哈尔滨",
-    "airport": "哈尔滨太平国际机场",
-    "iata": "HRB"
-   },
-   "dep_time": "06:40",
-   "arr_time": "14:00",
-   "days": [
-    4
-   ],
-   "effective_dates": [
-    [
-     "2026-10-29",
-     "2027-03-25"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
+   "notes": "官网 ableAirlineQuery 深圳-青岛-哈尔滨终到：06:40-13:55，除周四，2026-10-26至2026-12-23"
   },
   {
    "flight_no": "HU7022",
@@ -33504,15 +33535,15 @@
    ],
    "effective_dates": [
     [
-     "2026-10-25",
+     "2026-10-26",
      "2027-03-27"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
-   "source": "plus_winter_2026",
+   "source": "hna_able_airline_query",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网 ableAirlineQuery：07:25-08:55，每日，2026-10-26至2027-03-27"
   },
   {
    "flight_no": "HU7026",
@@ -33570,14 +33601,14 @@
    "effective_dates": [
     [
      "2026-10-25",
-     "2027-03-26"
+     "2026-12-24"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
-   "source": "plus_winter_2026",
+   "source": "hna_able_airline_query",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网 ableAirlineQuery：23:00-00:35，班期一二三四五日，2026-10-25至2026-12-24"
   },
   {
    "flight_no": "HU7028",
@@ -33605,15 +33636,15 @@
    ],
    "effective_dates": [
     [
-     "2026-10-25",
-     "2027-03-27"
+     "2026-10-26",
+     "2026-12-24"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
-   "source": "plus_winter_2026",
+   "source": "hna_able_airline_query",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网 ableAirlineQuery：23:30-01:05，每日，2026-10-26至2026-12-24"
   },
   {
    "flight_no": "HU7389",
@@ -33674,15 +33705,15 @@
    ],
    "effective_dates": [
     [
-     "2026-10-25",
+     "2026-10-26",
      "2027-03-26"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
-   "source": "plus_winter_2026",
+   "source": "hna_able_airline_query",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网 ableAirlineQuery：21:55-00:05，班期一三五日，2026-10-26至2027-03-26"
   },
   {
    "flight_no": "HU7393",
@@ -33734,7 +33765,7 @@
     "iata": "HGH"
    },
    "dep_time": "22:25",
-   "arr_time": "00:35",
+   "arr_time": "00:25",
    "days": [
     2,
     3,
@@ -33750,9 +33781,9 @@
    ],
    "product": "666/2666",
    "product_conflict": false,
-   "source": "plus_winter_2026",
+   "source": "hna_able_airline_query",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网 ableAirlineQuery：22:25-00:25，班期二三五六日，2026-10-25至2027-03-27"
   },
   {
    "flight_no": "HU7397",
@@ -33799,7 +33830,7 @@
     "iata": "HGH"
    },
    "dep_time": "07:50",
-   "arr_time": "09:55",
+   "arr_time": "10:05",
    "days": [
     2,
     4,
@@ -33813,9 +33844,9 @@
    ],
    "product": "666/2666",
    "product_conflict": false,
-   "source": "plus_winter_2026",
+   "source": "hna_able_airline_query",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网 ableAirlineQuery：07:50-10:05，班期二四六，2026-10-27至2027-03-27"
   },
   {
    "flight_no": "Y87901",
@@ -34112,14 +34143,14 @@
    "effective_dates": [
     [
      "2026-10-26",
-     "2027-03-22"
+     "2026-10-26"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
-   "source": "plus_winter_2026",
+   "source": "hna_able_airline_query",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网 ableAirlineQuery：22:00-23:55，仅周一，2026-10-26"
   },
   {
    "flight_no": "HU7767",
@@ -34240,7 +34271,7 @@
     "iata": "NNY"
    },
    "dep_time": "06:40",
-   "arr_time": "08:45",
+   "arr_time": "09:00",
    "days": [
     6
    ],
@@ -34252,9 +34283,9 @@
    ],
    "product": "666/2666",
    "product_conflict": false,
-   "source": "plus_winter_2026",
+   "source": "hna_able_airline_query",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网 ableAirlineQuery：06:40-09:00，周六，2026-10-31至2027-03-27"
   },
   {
    "flight_no": "HU7747",
@@ -34374,11 +34405,9 @@
    "dep_time": "07:40",
    "arr_time": "10:00",
    "days": [
-    1,
     2,
     3,
     4,
-    5,
     6,
     7
    ],
@@ -34390,9 +34419,40 @@
    ],
    "product": "666/2666",
    "product_conflict": false,
-   "source": "plus_winter_2026",
+   "source": "hna_able_airline_query",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网 ableAirlineQuery：07:40-10:00，班期二三四六日，2026-10-25至2027-03-27"
+  },
+  {
+   "flight_no": "HU7721",
+   "carrier": "海南航空",
+   "origin": {
+    "city": "深圳",
+    "airport": "深圳宝安国际机场",
+    "iata": "SZX"
+   },
+   "dest": {
+    "city": "上海",
+    "airport": "上海浦东国际机场",
+    "iata": "PVG"
+   },
+   "dep_time": "07:40",
+   "arr_time": "10:00",
+   "days": [
+    1,
+    5
+   ],
+   "effective_dates": [
+    [
+     "2026-10-26",
+     "2027-03-26"
+    ]
+   ],
+   "product": "666/2666",
+   "product_conflict": false,
+   "source": "hna_able_airline_query",
+   "season": "2026冬春",
+   "notes": "官网 ableAirlineQuery：07:40-10:00，班期一五，2026-10-26至2027-03-26"
   },
   {
    "flight_no": "HU7723",

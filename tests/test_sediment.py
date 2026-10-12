@@ -257,6 +257,14 @@ def test_szx_winter_official_schedule():
     assert tao["days"] == [1, 2, 3, 5, 6, 7]
     assert tao["effective_dates"] == [["2026-10-26", "2026-12-23"]]
     assert sediment.query(from_city="SZX", to_city="TAO", flight_no="HU7763", date_str="2026-10-29") == []
+    hrb = sediment.query(from_city="SZX", to_city="HRB", flight_no="HU7763", date_str="2026-10-26")
+    assert len(hrb) == 1
+    assert (hrb[0]["dep_time"], hrb[0]["arr_time"]) == ("06:40", "13:55")
+    assert hrb[0]["days"] == [1, 2, 3, 5, 6, 7]
+    assert hrb[0]["effective_dates"] == [["2026-10-26", "2026-12-23"]]
+    assert hrb[0]["source"] == "hna_able_airline_query"
+    assert sediment.query(from_city="SZX", to_city="HRB", flight_no="HU7763", date_str="2026-10-29") == []
+    assert sediment.query(from_city="SZX", to_city="HRB", flight_no="HU7763", date_str="2027-03-27") == []
     assert sediment.query(from_city="SZX", to_city="LHW", flight_no="HU7763", date_str="2026-10-26") == []
     assert sediment.query(from_city="SZX", to_city="LHW", flight_no="HU7763", date_str="2026-10-24")
     lhw = one("SZX", "LHW", "HU7852", "2026-10-26")
@@ -272,13 +280,34 @@ def test_szx_winter_official_schedule():
     late_rows = sediment.query(from_city="SZX", to_city="PEK", flight_no="HU7716", date_str="2026-10-26")
     assert len(late_rows) == 1
     late = late_rows[0]
-    assert late["source"] == "hna_booking"
+    assert late["source"] == "hna_able_airline_query"
     assert (late["dep_time"], late["arr_time"]) == ("21:10", "00:25")
     assert late["days"] == [1, 2, 3, 4, 5, 6, 7]
-    assert late["effective_dates"] == [["2026-10-25", "2027-03-27"]]
-    sunday = sediment.query(from_city="SZX", to_city="PEK", flight_no="HU7716", date_str="2026-10-25")
-    assert len(sunday) == 1 and sunday[0]["dep_time"] == "21:10" and sunday[0]["source"] == "hna_booking"
+    assert late["effective_dates"] == [["2026-10-26", "2027-03-27"]]
+    # 订票页 10-25 有班，666/2666 资格名单从 10-26 起
+    assert sediment.query(from_city="SZX", to_city="PEK", flight_no="HU7716", date_str="2026-10-25") == []
     assert sediment.query(from_city="SZX", to_city="PEK", flight_no="HU7716", date_str="2026-10-24")[0]["dep_time"] == "20:10"
+
+    pek = sediment.query(from_city="SZX", to_city="PEK", flight_no="HU7714", date_str="2026-11-12")
+    assert len(pek) == 1 and pek[0]["arr_time"] == "22:15" and pek[0]["product"] == "2666"
+    assert pek[0]["effective_dates"] == [["2026-10-25", "2026-11-12"]]
+    assert sediment.query(from_city="SZX", to_city="PEK", flight_no="HU7714", date_str="2026-11-13") == []
+
+    mon = sediment.query(from_city="SZX", to_city="TFU", flight_no="HU7375", date_str="2026-10-26")
+    assert len(mon) == 1 and mon[0]["days"] == [1] and mon[0]["effective_dates"] == [["2026-10-26", "2026-10-26"]]
+    fri = sediment.query(from_city="SZX", to_city="TFU", flight_no="HU7375", date_str="2026-10-30")
+    assert len(fri) == 1 and fri[0]["days"] == [1, 5, 6]
+    assert fri[0]["effective_dates"] == [["2026-10-30", "2026-11-30"]]
+    assert sediment.query(from_city="SZX", to_city="TFU", flight_no="HU7375", date_str="2027-03-27") == []
+
+    early = sediment.query(from_city="SZX", to_city="CKG", flight_no="HU7357", date_str="2026-11-01")
+    later = sediment.query(from_city="SZX", to_city="CKG", flight_no="HU7357", date_str="2026-11-02")
+    assert len(early) == 1 and early[0]["effective_dates"] == [["2026-10-25", "2026-11-01"]]
+    assert len(later) == 1 and later[0]["effective_dates"] == [["2026-11-02", "2027-03-27"]]
+
+    hak = sediment.query(from_city="SZX", to_city="HAK", flight_no="HU7028", date_str="2026-12-24")
+    assert len(hak) == 1 and hak[0]["effective_dates"] == [["2026-10-26", "2026-12-24"]]
+    assert sediment.query(from_city="SZX", to_city="HAK", flight_no="HU7028", date_str="2026-10-25") == []
 
 
 def test_blackxool_gap_rows_live_only_in_winter_table():
