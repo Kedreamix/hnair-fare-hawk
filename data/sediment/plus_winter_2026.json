@@ -1,8 +1,8 @@
 {
  "season": "2026冬春",
  "title": "海航 PLUS 适用航班 26 冬春",
- "generated_at": "2026-10-10",
- "count": 1491,
+ "generated_at": "2026-10-11",
+ "count": 1514,
  "records": [
   {
    "flight_no": "GS7514",
@@ -33196,7 +33196,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": null
+   "notes": "PLUS表原有周三周日拆行，官网10/26权益页未列此班期。官网主班为一二四五六"
   },
   {
    "flight_no": "HU7702",
@@ -33230,7 +33230,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网权益主班：07:30-10:40，班期一二四五六，2026-10-26至2027-03-27"
   },
   {
    "flight_no": "HU7714",
@@ -33300,9 +33300,9 @@
    ],
    "product": "666/2666",
    "product_conflict": false,
-   "source": "plus_winter_2026",
+   "source": "hna_booking",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网订票页核实：21:10 深圳宝安T3→00:25+1 北京首都T2，2026-10-25（周日）与 2026-10-26 均有班。生效起 2026-10-25，至 2027-03-27。与小红书全国冬春 PDF（10.25 起）一致。此前曾按 10-26 截图写成 10-26 起"
   },
   {
    "flight_no": "HU7375",
@@ -33956,7 +33956,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网06:25-09:00每日，2026-10-25至2027-03-27"
   },
   {
    "flight_no": "8L9890",
@@ -34191,7 +34191,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网10/26截图未覆盖。冬春兰州主号，时刻沿用PLUS表07:45-11:15"
   },
   {
    "flight_no": "Y87939",
@@ -34306,22 +34306,21 @@
     1,
     2,
     3,
-    4,
     5,
     6,
     7
    ],
    "effective_dates": [
     [
-     "2026-10-25",
-     "2027-03-27"
+     "2026-10-26",
+     "2026-12-23"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网：深圳-青岛06:40-10:05，除周四，2026-10-26至2026-12-23。原PLUS表写每日且至2027-03-27"
   },
   {
    "flight_no": "HU7750",
@@ -34555,7 +34554,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": null
+   "notes": "PLUS表原有06:50二四六，不是官网权益查询主班。官网主班为07:05一三五日至2026-12-23"
   },
   {
    "flight_no": "HU7779",
@@ -34581,14 +34580,14 @@
    "effective_dates": [
     [
      "2026-10-25",
-     "2027-03-26"
+     "2026-12-23"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网权益主班：经停武汉07:05-12:40，一三五日至2026-12-23。原PLUS表写到2027-03-26"
   },
   {
    "flight_no": "HU7769",
@@ -34656,7 +34655,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": null
+   "notes": "PLUS表原有06:50二四六，不是官网权益查询主班。官网主班为07:05一三五日至2026-12-23"
   },
   {
    "flight_no": "HU7779",
@@ -34682,14 +34681,14 @@
    "effective_dates": [
     [
      "2026-10-25",
-     "2027-03-26"
+     "2026-12-23"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网权益主班：07:05一三五日至2026-12-23。原PLUS表写到2027-03-26"
   },
   {
    "flight_no": "HU7852",
@@ -34725,7 +34724,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": null
+   "notes": "经停兰州续飞乌鲁木齐。官网10/26截图未覆盖"
   },
   {
    "flight_no": "UQ2616",
@@ -34761,7 +34760,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": null
+   "notes": "同号首段06:55-12:35，续飞于田"
   },
   {
    "flight_no": "9H8324",
@@ -34963,7 +34962,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网06:55-15:50每日，经停乌鲁木齐，2026-10-25至2027-03-27"
   },
   {
    "flight_no": "PN6312",
@@ -35064,7 +35063,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": null
+   "notes": "官网07:40-09:40一三五日（含周日），2026-10-25至2027-03-26"
   },
   {
    "flight_no": "8L9684",
@@ -49757,6 +49756,753 @@
    "source": "plus_winter_2026",
    "season": "2026冬春",
    "notes": null
+  },
+  {
+   "flight_no": "PN6448",
+   "carrier": "西部航空",
+   "origin": {
+    "city": "揭阳",
+    "airport": "揭阳潮汕国际机场",
+    "iata": "SWA"
+   },
+   "dest": {
+    "city": "重庆",
+    "airport": "重庆江北国际机场",
+    "iata": "CKG"
+   },
+   "dep_time": "21:55",
+   "arr_time": "00:30",
+   "days": [
+    2,
+    4,
+    6
+   ],
+   "effective_dates": [
+    [
+     "2026-10-27",
+     "2026-12-17"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "hna_booking",
+   "season": "2026冬春",
+   "notes": "时刻与窗口仍按 Blackxool v1009 winter_active=Y（666表）：21:55-00:30，二四六，2026-10-27至2026-12-17，不是全季。官网订票页 2026-10-27 查到西部航空 PN6448 21:55 揭阳潮汕→00:30+1 重庆江北；同页还有 PN6306 17:00-19:15，未另建冬春行。静态航班时刻表仍只列 PN6306 09:25、PN6450 23:00/23:30，窗口止于 2026-10-24，未列 PN6448；本条以订票页为准。666 档仍来自 CSV，订票页未核权益档"
+  },
+  {
+   "flight_no": "Y87584",
+   "carrier": "金鹏航空",
+   "origin": {
+    "city": "济南",
+    "airport": "济南遥墙国际机场",
+    "iata": "TNA"
+   },
+   "dest": {
+    "city": "深圳",
+    "airport": "深圳宝安国际机场",
+    "iata": "SZX"
+   },
+   "dep_time": "20:30",
+   "arr_time": "23:25",
+   "days": [
+    1,
+    3,
+    5,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-10-25",
+     "2026-12-18"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "8L9557",
+   "carrier": "祥鹏航空",
+   "origin": {
+    "city": "昆明",
+    "airport": "昆明长水国际机场",
+    "iata": "KMG"
+   },
+   "dest": {
+    "city": "蚌埠",
+    "airport": "滕湖",
+    "iata": "BFY"
+   },
+   "dep_time": "06:40",
+   "arr_time": "09:30",
+   "days": [
+    1,
+    3,
+    5,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-10-25",
+     "2026-12-18"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季。全航路昆明/长水-蚌埠/滕湖-哈尔滨/太平"
+  },
+  {
+   "flight_no": "GX8822",
+   "carrier": "北部湾航空",
+   "origin": {
+    "city": "厦门",
+    "airport": "厦门高崎国际机场",
+    "iata": "XMN"
+   },
+   "dest": {
+    "city": "南宁",
+    "airport": "吴圩",
+    "iata": "NNG"
+   },
+   "dep_time": "22:00",
+   "arr_time": "00:10",
+   "days": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-10-11",
+     "2026-10-24"
+    ],
+    [
+     "2026-11-03",
+     "2026-12-17"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "GX8877",
+   "carrier": "北部湾航空",
+   "origin": {
+    "city": "南宁",
+    "airport": "吴圩",
+    "iata": "NNG"
+   },
+   "dest": {
+    "city": "西宁",
+    "airport": "西宁曹家堡国际机场",
+    "iata": "XNN"
+   },
+   "dep_time": "07:00",
+   "arr_time": "09:45",
+   "days": [
+    2,
+    4,
+    6
+   ],
+   "effective_dates": [
+    [
+     "2026-10-27",
+     "2026-12-17"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "GX8901",
+   "carrier": "北部湾航空",
+   "origin": {
+    "city": "海口",
+    "airport": "海口美兰国际机场",
+    "iata": "HAK"
+   },
+   "dest": {
+    "city": "蚌埠",
+    "airport": "滕湖",
+    "iata": "BFY"
+   },
+   "dep_time": "06:55",
+   "arr_time": "09:45",
+   "days": [
+    2,
+    4,
+    6
+   ],
+   "effective_dates": [
+    [
+     "2026-10-27",
+     "2026-12-17"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "GX8932",
+   "carrier": "北部湾航空",
+   "origin": {
+    "city": "泸州",
+    "airport": "泸州云龙机场",
+    "iata": "LZO"
+   },
+   "dest": {
+    "city": "海口",
+    "airport": "海口美兰国际机场",
+    "iata": "HAK"
+   },
+   "dep_time": "21:30",
+   "arr_time": "23:30",
+   "days": [
+    1,
+    3,
+    5,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-10-11",
+     "2026-12-18"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "HU445",
+   "carrier": "海南航空",
+   "origin": {
+    "city": "海口",
+    "airport": "海口美兰国际机场",
+    "iata": "HAK"
+   },
+   "dest": {
+    "city": "重庆",
+    "airport": "重庆江北国际机场",
+    "iata": "CKG"
+   },
+   "dep_time": "07:15",
+   "arr_time": "09:30",
+   "days": [
+    4
+   ],
+   "effective_dates": [
+    [
+     "2026-10-15",
+     "2026-12-17"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "HU459",
+   "carrier": "海南航空",
+   "origin": {
+    "city": "兰州",
+    "airport": "兰州中川国际机场",
+    "iata": "LHW"
+   },
+   "dest": {
+    "city": "海口",
+    "airport": "海口美兰国际机场",
+    "iata": "HAK"
+   },
+   "dep_time": "07:05",
+   "arr_time": "10:20",
+   "days": [
+    1,
+    3,
+    5,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-10-11",
+     "2026-12-18"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "HU460",
+   "carrier": "海南航空",
+   "origin": {
+    "city": "海口",
+    "airport": "海口美兰国际机场",
+    "iata": "HAK"
+   },
+   "dest": {
+    "city": "兰州",
+    "airport": "兰州中川国际机场",
+    "iata": "LHW"
+   },
+   "dep_time": "21:35",
+   "arr_time": "00:55",
+   "days": [
+    1,
+    3,
+    5,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-10-11",
+     "2026-12-18"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "HU717",
+   "carrier": "海南航空",
+   "origin": {
+    "city": "济南",
+    "airport": "济南遥墙国际机场",
+    "iata": "TNA"
+   },
+   "dest": {
+    "city": "重庆",
+    "airport": "重庆江北国际机场",
+    "iata": "CKG"
+   },
+   "dep_time": "20:55",
+   "arr_time": "23:30",
+   "days": [
+    1,
+    5
+   ],
+   "effective_dates": [
+    [
+     "2026-10-12",
+     "2026-12-18"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "HU718",
+   "carrier": "海南航空",
+   "origin": {
+    "city": "重庆",
+    "airport": "重庆江北国际机场",
+    "iata": "CKG"
+   },
+   "dest": {
+    "city": "济南",
+    "airport": "济南遥墙国际机场",
+    "iata": "TNA"
+   },
+   "dep_time": "07:00",
+   "arr_time": "09:05",
+   "days": [
+    3,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-10-11",
+     "2026-12-16"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "HU785",
+   "carrier": "海南航空",
+   "origin": {
+    "city": "重庆",
+    "airport": "重庆江北国际机场",
+    "iata": "CKG"
+   },
+   "dest": {
+    "city": "海口",
+    "airport": "海口美兰国际机场",
+    "iata": "HAK"
+   },
+   "dep_time": "21:50",
+   "arr_time": "00:05",
+   "days": [
+    4,
+    6
+   ],
+   "effective_dates": [
+    [
+     "2026-10-15",
+     "2026-12-17"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "HU786",
+   "carrier": "海南航空",
+   "origin": {
+    "city": "海口",
+    "airport": "海口美兰国际机场",
+    "iata": "HAK"
+   },
+   "dest": {
+    "city": "重庆",
+    "airport": "重庆江北国际机场",
+    "iata": "CKG"
+   },
+   "dep_time": "07:30",
+   "arr_time": "10:00",
+   "days": [
+    1,
+    6
+   ],
+   "effective_dates": [
+    [
+     "2026-10-12",
+     "2026-12-14"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "HU7971",
+   "carrier": "海南航空",
+   "origin": {
+    "city": "海口",
+    "airport": "海口美兰国际机场",
+    "iata": "HAK"
+   },
+   "dest": {
+    "city": "重庆",
+    "airport": "重庆江北国际机场",
+    "iata": "CKG"
+   },
+   "dep_time": "21:10",
+   "arr_time": "23:25",
+   "days": [
+    6
+   ],
+   "effective_dates": [
+    [
+     "2026-10-17",
+     "2026-12-12"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "HU7972",
+   "carrier": "海南航空",
+   "origin": {
+    "city": "重庆",
+    "airport": "重庆江北国际机场",
+    "iata": "CKG"
+   },
+   "dest": {
+    "city": "海口",
+    "airport": "海口美兰国际机场",
+    "iata": "HAK"
+   },
+   "dep_time": "07:50",
+   "arr_time": "10:00",
+   "days": [
+    1
+   ],
+   "effective_dates": [
+    [
+     "2026-10-12",
+     "2026-12-14"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "JD472",
+   "carrier": "首都航空",
+   "origin": {
+    "city": "青岛",
+    "airport": "青岛胶东国际机场",
+    "iata": "TAO"
+   },
+   "dest": {
+    "city": "杭州",
+    "airport": "杭州萧山国际机场",
+    "iata": "HGH"
+   },
+   "dep_time": "21:10",
+   "arr_time": "22:55",
+   "days": [
+    6
+   ],
+   "effective_dates": [
+    [
+     "2026-10-31",
+     "2026-12-12"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "PN6485",
+   "carrier": "西部航空",
+   "origin": {
+    "city": "重庆",
+    "airport": "重庆江北国际机场",
+    "iata": "CKG"
+   },
+   "dest": {
+    "city": "蚌埠",
+    "airport": "滕湖",
+    "iata": "BFY"
+   },
+   "dep_time": "08:00",
+   "arr_time": "10:15",
+   "days": [
+    1,
+    3,
+    5,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-10-25",
+     "2026-12-18"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "PN6518",
+   "carrier": "西部航空",
+   "origin": {
+    "city": "大连",
+    "airport": "大连周水子国际机场",
+    "iata": "DLC"
+   },
+   "dest": {
+    "city": "太原",
+    "airport": "太原武宿国际机场",
+    "iata": "TYN"
+   },
+   "dep_time": "20:10",
+   "arr_time": "21:55",
+   "days": [
+    1,
+    3,
+    5,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-10-25",
+     "2026-11-06"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "UQ2621",
+   "carrier": "乌鲁木齐航空",
+   "origin": {
+    "city": "乌鲁木齐",
+    "airport": "乌鲁木齐天山国际机场",
+    "iata": "URC"
+   },
+   "dest": {
+    "city": "图木舒克",
+    "airport": "图木舒克唐王城机场",
+    "iata": "TWC"
+   },
+   "dep_time": "22:55",
+   "arr_time": "00:45",
+   "days": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-10-11",
+     "2026-12-18"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "UQ2622",
+   "carrier": "乌鲁木齐航空",
+   "origin": {
+    "city": "图木舒克",
+    "airport": "图木舒克唐王城机场",
+    "iata": "TWC"
+   },
+   "dest": {
+    "city": "乌鲁木齐",
+    "airport": "乌鲁木齐天山国际机场",
+    "iata": "URC"
+   },
+   "dep_time": "07:20",
+   "arr_time": "08:55",
+   "days": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-10-11",
+     "2026-12-18"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "UQ2641",
+   "carrier": "乌鲁木齐航空",
+   "origin": {
+    "city": "乌鲁木齐",
+    "airport": "乌鲁木齐天山国际机场",
+    "iata": "URC"
+   },
+   "dest": {
+    "city": "洛阳",
+    "airport": "北郊",
+    "iata": "LYA"
+   },
+   "dep_time": "07:25",
+   "arr_time": "11:05",
+   "days": [
+    2,
+    4,
+    6
+   ],
+   "effective_dates": [
+    [
+     "2026-10-13",
+     "2026-12-17"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+  },
+  {
+   "flight_no": "UQ2642",
+   "carrier": "乌鲁木齐航空",
+   "origin": {
+    "city": "洛阳",
+    "airport": "北郊",
+    "iata": "LYA"
+   },
+   "dest": {
+    "city": "乌鲁木齐",
+    "airport": "乌鲁木齐天山国际机场",
+    "iata": "URC"
+   },
+   "dep_time": "23:55",
+   "arr_time": "03:50",
+   "days": [
+    2,
+    4,
+    6
+   ],
+   "effective_dates": [
+    [
+     "2026-10-13",
+     "2026-12-17"
+    ]
+   ],
+   "product": "666",
+   "product_conflict": false,
+   "source": "blackxool_v1009",
+   "season": "2026冬春",
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
   }
  ]
 }
