@@ -269,10 +269,15 @@ def test_szx_winter_official_schedule():
     urc = one("SZX", "URC", "UQ2616", "2026-10-26")
     assert (urc["dep_time"], urc["arr_time"]) == ("06:55", "12:35")
 
-    late = one("SZX", "PEK", "HU7716", "2026-10-26")
+    late_rows = sediment.query(from_city="SZX", to_city="PEK", flight_no="HU7716", date_str="2026-10-26")
+    assert len(late_rows) == 1
+    late = late_rows[0]
+    assert late["source"] == "hna_booking"
     assert (late["dep_time"], late["arr_time"]) == ("21:10", "00:25")
     assert late["days"] == [1, 2, 3, 4, 5, 6, 7]
-    assert late["effective_dates"] == [["2026-10-26", "2027-03-27"]]
+    assert late["effective_dates"] == [["2026-10-25", "2027-03-27"]]
+    sunday = sediment.query(from_city="SZX", to_city="PEK", flight_no="HU7716", date_str="2026-10-25")
+    assert len(sunday) == 1 and sunday[0]["dep_time"] == "21:10" and sunday[0]["source"] == "hna_booking"
     assert sediment.query(from_city="SZX", to_city="PEK", flight_no="HU7716", date_str="2026-10-24")[0]["dep_time"] == "20:10"
 
 
