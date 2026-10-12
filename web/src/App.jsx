@@ -13,6 +13,7 @@ import dayjs from 'dayjs'
 import { api, formatTs } from './api.js'
 import { usePolling } from './components.jsx'
 import { cityWithProvince } from './cityProvince.js'
+import { AIRPORT_TAX, FACE_PRICE, weekendFareEstimate } from './weekendFare.js'
 
 const TABS = [
   { key: 'overview', icon: <OverviewIcon />, label: '总览' },
@@ -3508,6 +3509,7 @@ function WeekendPlanCard({ card, busy, seatBusy, onFollow, onCheckSeats, onSeatL
   const tags = planTags(outbound, inbound).filter((tag) => tag.color === 'green' || tag.color === 'default')
   const flavor = CITY_FLAVORS[card.city]
   const altCount = Math.max(0, card.outs.length - 1) + Math.max(0, card.backs.length - 1)
+  const fare = weekendFareEstimate(distance)
   return (
     <Card className="weekend-dest" size="small" id={weekendPlanDomId(card)}>
       <div className="weekend-card-head">
@@ -3590,10 +3592,14 @@ function WeekendPlanCard({ card, busy, seatBusy, onFollow, onCheckSeats, onSeatL
         <div className="weekend-fare">
           <div className="weekend-fare-title">会员卡兑换费用参考</div>
           <ul>
-            <li>票面：放出 199 票时，666 / 2666 每程固定 <b>¥199</b> 兑换，往返 ¥398</li>
-            <li>机场建设费：每程 ¥50，往返 ¥100</li>
-            <li>燃油附加费：按出票当日标准另计{distance ? `（本航线约 ${distance} km，${distance > 800 ? '属 800 km 以上档' : '属 800 km 以内档'}）` : ''}</li>
-            <li>预估：往返约 <b className="is-price">¥498</b> + 燃油附加费</li>
+            <li>票面：放出 199 票时，666 / 2666 每程固定 <b>¥{FACE_PRICE}</b> 兑换，往返 ¥{fare.faceRound}</li>
+            <li>民航发展基金（机建）：成人国内每程 ¥{AIRPORT_TAX}，往返 ¥{fare.airportRound}</li>
+            <li>{fare.fuelLine}</li>
+            <li>
+              预估：{fare.estimate.lead}
+              <b className="is-price">{fare.estimate.highlight}</b>
+              {fare.estimate.tail}
+            </li>
           </ul>
         </div>
       )}
