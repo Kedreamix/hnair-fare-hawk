@@ -4007,13 +4007,7 @@ function drawMapDot(ctx, x, y, r, color, ratio) {
 function reachCaption(card, variant, product) {
   const outN = card.outs?.length || 0
   const backN = card.backs?.length || 0
-  if (variant === 'overview') {
-    const dir = card.trip === 'round' ? '有去有回' : card.trip === 'back' ? '只有回程' : '只有去程'
-    const tier = card.kind === '666' ? '666' : '2666'
-    const go = card.flightTotal || 0
-    const back = card.inboundFlights || 0
-    return `${dir} · ${tier} · 去${go}回${back}`
-  }
+  if (variant === 'overview') return ''
   if (variant !== 'oneway') return `${product} · 去${outN} 回${backN}`
   const timeSource = outN ? card.outs : card.backs
   const times = timeFlyLabels(timeSource, 1)[0]
@@ -4049,9 +4043,11 @@ function buildReachScene({ base, cards, filter, tripFilter, variant, width, heig
       kind: reachKindOf(card, variant),
       product,
       caption: reachCaption(card, variant, product),
-      mapCaption: variant === 'oneway' || variant === 'overview'
-        ? reachCaption(card, variant, product)
-        : `去${card.outs?.length || 0} 回${card.backs?.length || 0}`,
+      mapCaption: variant === 'overview'
+        ? ''
+        : variant === 'oneway'
+          ? reachCaption(card, variant, product)
+          : `去${card.outs?.length || 0} 回${card.backs?.length || 0}`,
       options: Number(card.flightCount) || ((card.outs?.length || 0) + (card.backs?.length || 0)),
     }
     const cityKey = card.city || dest.city || dest.iata
@@ -4500,11 +4496,11 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
         <div className="weekend-map-legend">
           {variant === 'overview' ? (
             <>
-              <span><i className="map-dot is-round" />有去有回</span>
-              <span><i className="map-dot is-out" />只有去程</span>
-              <span><i className="map-dot is-back" />只有回程</span>
-              <span><i className="map-dot is-solid-sample" />实心 · 666 可用</span>
-              <span><i className="map-dot is-hollow-sample" />空心 · 2666 专享</span>
+              <span title="有去有回"><i className="map-dot is-round" />绿</span>
+              <span title="只有去程"><i className="map-dot is-out" />橙</span>
+              <span title="只有回程"><i className="map-dot is-back" />蓝</span>
+              <span title="实心是 666"><i className="map-dot is-solid-sample" />666</span>
+              <span title="空心是 2666"><i className="map-dot is-hollow-sample" />2666</span>
             </>
           ) : variant === 'oneway' ? (
             <>
@@ -4592,7 +4588,7 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
           {tip && (
             <div className="weekend-map-tip" style={{ left: tip.x, top: tip.y }}>
               <b>{tip.city}</b>
-              <span>{variant === 'oneway' ? `从${tip.from}出发 · ${tip.tripText}` : variant === 'overview' ? `从${tip.from}出发 · ${tip.caption}` : `从${tip.from}出发 · 可选 ${tip.caption.split(' · ')[1] || ''}`}</span>
+              <span>{variant === 'overview' ? `从${tip.from}出发` : variant === 'oneway' ? `从${tip.from}出发 · ${tip.tripText}` : `从${tip.from}出发 · 可选 ${tip.caption.split(' · ')[1] || ''}`}</span>
               <span className={String(tip.product).startsWith('2666') ? 'is-muted' : ''}>{tip.product}</span>
               {(tip.outLines || []).map((line) => <span key={line}>{variant === 'weekend' ? `去程 ${line}` : line}</span>)}
               {tip.backText ? <span>返程 {tip.backText}</span> : null}
@@ -6160,19 +6156,19 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
                   <div className="weekend-summary-title">{heatFroms || '所选城市'} 出发 · 可以去这些地方</div>
                   <div className="weekend-summary-sub">
                     {heatSpan}
-                    {heatCards.length ? <> · <b>{heatCards.length}</b> 个城市 · 有去有回 <b>{heatBoth}</b> · 只有去程 <b>{heatOut}</b> · 只有回程 <b>{heatBack}</b></> : ''}
+                    {heatCards.length ? <> · <b>{heatCards.length}</b> 个城市 · 绿 <b>{heatBoth}</b> · 橙 <b>{heatOut}</b> · 蓝 <b>{heatBack}</b></> : ''}
                   </div>
                 </div>
-                <span className="weekend-summary-note">颜色表示有没有回程，实心是 666，空心是 2666。同一航班同一天只算一次。</span>
+                <span className="weekend-summary-note">绿有来回，橙只有去，蓝只有回。实心 666，空心 2666。</span>
               </div>
               {onewayHeatErr ? <Alert style={{ marginBottom: 12 }} type="error" showIcon message={onewayHeatErr} /> : null}
               {heatCards.length > 0 && (
                 <div className="date-quick" style={{ marginBottom: 10 }}>
                   {[
                     { key: 'all', label: `全部方向（${heatCards.length}）` },
-                    { key: 'round', label: `有去有回（${heatBoth}）` },
-                    { key: 'out', label: `只有去程（${heatOut}）` },
-                    { key: 'back', label: `只有回程（${heatBack}）` },
+                    { key: 'round', label: `绿（${heatBoth}）` },
+                    { key: 'out', label: `橙（${heatOut}）` },
+                    { key: 'back', label: `蓝（${heatBack}）` },
                   ].map((item) => (
                     <Button
                       key={item.key}
