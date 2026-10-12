@@ -3870,7 +3870,7 @@ function drawHeatLayer(ctx, points, radius, opacity, rgb) {
   ctx.drawImage(layer, 0, 0)
 }
 
-function drawRouteArc(ctx, from, to, rgb, alpha, lineWidth) {
+function drawRouteArc(ctx, from, to, rgb, alpha, lineWidth, fade = 0.35) {
   const [x1, y1] = from
   const [x2, y2] = to
   const dist = Math.hypot(x2 - x1, y2 - y1)
@@ -3882,7 +3882,7 @@ function drawRouteArc(ctx, from, to, rgb, alpha, lineWidth) {
   const cx = (x1 + x2) / 2 + nx * bend * flip
   const cy = (y1 + y2) / 2 + ny * bend * flip
   const grad = ctx.createLinearGradient(x1, y1, x2, y2)
-  grad.addColorStop(0, `rgba(${rgb}, ${alpha * 0.35})`)
+  grad.addColorStop(0, `rgba(${rgb}, ${alpha * fade})`)
   grad.addColorStop(1, `rgba(${rgb}, ${alpha})`)
   ctx.beginPath()
   ctx.moveTo(x1, y1)
@@ -4236,9 +4236,19 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
       const arcOrder = [...spots].sort((a, b) => (a.key === focusKey) - (b.key === focusKey))
       for (const spot of arcOrder) {
         const on = spot.key === focusKey
-        const alpha = on ? 0.9 : (focusKey ? 0.06 : 0.16)
-        const arcRgb = variant === 'overview' || on ? rgbOf(spot) : palette.heat
-        drawRouteArc(ctx, project(spot.origin.lon, spot.origin.lat), project(spot.dest.lon, spot.dest.lat), arcRgb, alpha, (on ? 2 : 1) * ratio)
+        const overview = variant === 'overview'
+        const alpha = on ? 0.95 : (focusKey ? (overview ? 0.28 : 0.06) : (overview ? 0.78 : 0.16))
+        const arcRgb = overview || on ? rgbOf(spot) : palette.heat
+        const width = (on ? (overview ? 3.4 : 2) : (overview ? 2.6 : 1)) * ratio
+        drawRouteArc(
+          ctx,
+          project(spot.origin.lon, spot.origin.lat),
+          project(spot.dest.lon, spot.dest.lat),
+          arcRgb,
+          alpha,
+          width,
+          overview ? 0.72 : 0.35,
+        )
       }
 
       const origins = new Map()
@@ -4496,11 +4506,11 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
         <div className="weekend-map-legend">
           {variant === 'overview' ? (
             <>
-              <span title="有去有回"><i className="map-dot is-round" />绿</span>
-              <span title="只有去程"><i className="map-dot is-out" />橙</span>
-              <span title="只有回程"><i className="map-dot is-back" />蓝</span>
-              <span title="实心是 666"><i className="map-dot is-solid-sample" />666</span>
-              <span title="空心是 2666"><i className="map-dot is-hollow-sample" />2666</span>
+              <span><i className="map-dot is-round" />绿 有去有回</span>
+              <span><i className="map-dot is-out" />橙 只有去</span>
+              <span><i className="map-dot is-back" />蓝 只有回</span>
+              <span><i className="map-dot is-solid-sample" />实心 666</span>
+              <span><i className="map-dot is-hollow-sample" />空心 2666</span>
             </>
           ) : variant === 'oneway' ? (
             <>
@@ -6156,19 +6166,19 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
                   <div className="weekend-summary-title">{heatFroms || '所选城市'} 出发 · 可以去这些地方</div>
                   <div className="weekend-summary-sub">
                     {heatSpan}
-                    {heatCards.length ? <> · <b>{heatCards.length}</b> 个城市 · 绿 <b>{heatBoth}</b> · 橙 <b>{heatOut}</b> · 蓝 <b>{heatBack}</b></> : ''}
+                    {heatCards.length ? <> · <b>{heatCards.length}</b> 个城市 · 有去有回 <b>{heatBoth}</b> · 只有去 <b>{heatOut}</b> · 只有回 <b>{heatBack}</b></> : ''}
                   </div>
                 </div>
-                <span className="weekend-summary-note">绿有来回，橙只有去，蓝只有回。实心 666，空心 2666。</span>
+                <span className="weekend-summary-note">绿是有去有回，橙是只有去，蓝是只有回。实心 666，空心 2666。</span>
               </div>
               {onewayHeatErr ? <Alert style={{ marginBottom: 12 }} type="error" showIcon message={onewayHeatErr} /> : null}
               {heatCards.length > 0 && (
                 <div className="date-quick" style={{ marginBottom: 10 }}>
                   {[
                     { key: 'all', label: `全部方向（${heatCards.length}）` },
-                    { key: 'round', label: `绿（${heatBoth}）` },
-                    { key: 'out', label: `橙（${heatOut}）` },
-                    { key: 'back', label: `蓝（${heatBack}）` },
+                    { key: 'round', label: `有去有回（${heatBoth}）` },
+                    { key: 'out', label: `只有去（${heatOut}）` },
+                    { key: 'back', label: `只有回（${heatBack}）` },
                   ].map((item) => (
                     <Button
                       key={item.key}
