@@ -4371,7 +4371,14 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
           ctx.fillStyle = palette.muted
           ctx.fillText(caption, box.x + 8 * ratio + cityW + gap, baseY)
         }
-        layout.push({ ...spot, hitX: x / ratio, hitY: y / ratio, tipX: box.x / ratio, tipY: box.y / ratio })
+        layout.push({
+          ...spot,
+          hitX: x / ratio,
+          hitY: y / ratio,
+          tipX: box.x / ratio,
+          tipY: box.y / ratio,
+          label: { x: box.x / ratio, y: box.y / ratio, w: box.w / ratio, h: box.h / ratio },
+        })
       }
       layoutRef.current = layout
     }
@@ -4408,8 +4415,12 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
     const rect = canvas.getBoundingClientRect()
     const x = event.clientX - rect.left
     const y = event.clientY - rect.top
+    for (const spot of layoutRef.current) {
+      const label = spot.label
+      if (label && x >= label.x && y >= label.y && x <= label.x + label.w && y <= label.y + label.h) return spot
+    }
     let best = null
-    let bestD = 16
+    let bestD = 18
     for (const spot of layoutRef.current) {
       const dist = Math.hypot(x - spot.hitX, y - spot.hitY)
       if (dist < bestD) {
