@@ -3818,6 +3818,17 @@ function tripTone(trip, dark = false) {
   return { rgb, pin: `rgb(${rgb})`, text: `rgb(${rgb})`, stroke: `rgba(${rgb}, 0.4)` }
 }
 
+/* 单程热力专用：低饱和，避免和品牌绿/橙/蓝一样抢眼 */
+const OVERVIEW_TONES = {
+  light: { round: '122, 156, 134', out: '184, 148, 108', back: '122, 148, 170', heat: '158, 170, 180' },
+  dark: { round: '146, 176, 158', out: '198, 170, 132', back: '150, 174, 194', heat: '120, 136, 148' },
+}
+
+function overviewTone(trip, dark = false) {
+  const palette = OVERVIEW_TONES[dark ? 'dark' : 'light']
+  return trip === 'round' ? palette.round : trip === 'back' ? palette.back : palette.out
+}
+
 /* 单色热度：只用主题主色的深浅表达班次多少，不和图钉、标签抢颜色 */
 const heatPaletteCache = {}
 function heatPalette(rgb) {
@@ -4093,10 +4104,12 @@ function buildReachScene({ base, cards, filter, tripFilter, variant, width, heig
   const maxOptions = Math.max(1, ...spots.map((spot) => spot.options))
   for (const spot of spots) spot.level = spot.options / maxOptions
   const radius = Math.max(30 * ratio, Math.min(width, height) * 0.075)
+  const softHeat = variant === 'overview'
+  const heatRgb = softHeat ? (palette.land === '#FFFFFF' ? OVERVIEW_TONES.light.heat : OVERVIEW_TONES.dark.heat) : palette.heat
   drawHeatLayer(ctx, spots.map((spot) => {
     const [x, y] = project(spot.dest.lon, spot.dest.lat)
     return { x, y, weight: 0.3 + 0.7 * spot.level, spread: 0.75 + 0.45 * spot.level }
-  }), radius, palette.heatOpacity, palette.heat)
+  }), radius, softHeat ? 0.18 : palette.heatOpacity, heatRgb)
   return { spots, project, layer }
 }
 
@@ -4230,14 +4243,16 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
       ctx.setTransform(1, 0, 0, 1, 0, 0)
 
       const focusKey = hoverKey || activeKey
-      const rgbOf = (spot) => ((variant === 'oneway' || variant === 'overview')
-        ? tripTone(spot.card.trip, dark).rgb
-        : (spot.kind === '666' ? palette.pin666 : palette.pin2666))
+      const rgbOf = (spot) => (variant === 'overview'
+        ? overviewTone(spot.card.trip, dark)
+        : (variant === 'oneway'
+          ? tripTone(spot.card.trip, dark).rgb
+          : (spot.kind === '666' ? palette.pin666 : palette.pin2666)))
       const arcOrder = [...spots].sort((a, b) => (a.key === focusKey) - (b.key === focusKey))
       for (const spot of arcOrder) {
         const on = spot.key === focusKey
         const overview = variant === 'overview'
-        const alpha = on ? 0.95 : (focusKey ? (overview ? 0.28 : 0.06) : (overview ? 0.78 : 0.16))
+        const alpha = on ? 0.88 : (focusKey ? (overview ? 0.24 : 0.06) : (overview ? 0.58 : 0.16))
         const arcRgb = overview || on ? rgbOf(spot) : palette.heat
         const width = (on ? (overview ? 3.4 : 2) : (overview ? 2.6 : 1)) * ratio
         drawRouteArc(
@@ -4506,11 +4521,11 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
         <div className="weekend-map-legend">
           {variant === 'overview' ? (
             <>
-              <span><i className="map-dot is-round" />绿 有去有回</span>
-              <span><i className="map-dot is-out" />橙 只有去</span>
-              <span><i className="map-dot is-back" />蓝 只有回</span>
-              <span><i className="map-dot is-solid-sample" />实心 666</span>
-              <span><i className="map-dot is-hollow-sample" />空心 2666</span>
+              <span><i className="map-dot is-soft-round" />绿 有去有回</span>
+              <span><i className="map-dot is-soft-out" />橙 只有去</span>
+              <span><i className="map-dot is-soft-back" />蓝 只有回</span>
+              <span><i className="map-dot is-soft-solid" />实心 666</span>
+              <span><i className="map-dot is-soft-hollow" />空心 2666</span>
             </>
           ) : variant === 'oneway' ? (
             <>
