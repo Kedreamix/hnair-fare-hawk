@@ -311,6 +311,19 @@ def test_wechat_bot_and_email_send_without_leaking(monkeypatch):
     assert not ok and "不完整" in err
 
 
+def test_alert_lists_departure_and_query_time():
+    text = daemon._time_lines(
+        {"dep_time": "09:00", "arr_time": "12:00"},
+        {"times": {"dep": "08:10", "arr": "11:05", "dep_terminal": "T3", "arr_terminal": "T2"},
+         "stop": {"kind": "stopover", "via": ["HGH"]}},
+    )
+    assert "时刻：08:10 T3 起飞 → 11:05 T2 到达" in text
+    assert "经停：HGH" in text
+    assert "查询时间：" in text
+    fallback = daemon._time_lines({"dep_time": "09:00", "arr_time": "12:00"}, {})
+    assert "时刻：09:00 起飞 → 12:00 到达" in fallback
+
+
 def test_price_alert_includes_clickable_app_jump(monkeypatch):
     jump = channels.hna_jump_block("SZX", "SYX", "2026-10-20", "HU7701")
     assert "hna2app://app.hnar.com" in jump
@@ -351,9 +364,11 @@ def test_price_alert_includes_clickable_app_jump(monkeypatch):
     mail = message_from_string(sent["raw"])
     assert mail.get_content_type() == "text/html"
     body = mail.get_payload(decode=True).decode("utf-8")
-    assert "打开海航 App" in body
+    assert body.count("打开海航 App") == 1
+    assert "打开海航 App：" not in body
     assert "hna2app://app.hnar.com" in body
-    assert "打开官网查询" in body
+    assert "new.hnair.com" not in body
+    assert "官网查询" not in body
 
     card = channels.build_confirm_card("🎉 深圳→三亚", f"航班：HU7701\n{jump}", callback_key="price_alert", action_value="fp")
     labels = [btn["text"]["content"] for btn in card["elements"][1]["actions"]]
@@ -480,3 +495,44 @@ def test_extract_seat_info_none_when_no_classes():
     assert fetcher._extract_seat_info({"airItineraryPrices": []}) is None
     assert fetcher._extract_seat_info({"airItineraryPrices": [{"flightBookingClasses": []}]}) is None
     assert fetcher._extract_seat_info({}) is None
+
+
+def test_wecom_card_opens_flight_page(monkeypatch):
+    """企业微信纯文本点不开 App。有官网地址时整张卡片跳到查询页。"""
+    jump = channels.hna_jump_block("SZX", "SYX", "2026-10-20", "HU7701")
+    sent = {}
+
+    monkeypatch.setattr(channels, "_wecom_token", lambda corp_id, secret: "token")
+
+    def fake_post(url, payload):
+        sent["url"] = url
+        sent["payload"] = payload
+        return {"errcode": 0, "msgid": "m1"}
+
+    monkeypatch.setattr(channels, "_post_json", fake_post)
+    ok, err, mid = channels.send_wecom(
+        {"corp_id": "ww1", "agent_id": "100", "secret": "sec", "user_id": "zhang"},
+        "深圳→三亚 199 元",
+        f"航班：HU7701\n日期：2026-10-20\n{jump}",
+        True,
+    )
+    assert ok and err == "" and mid == "m1"
+    card = sent["payload"]["textcard"]
+    assert sent["payload"]["msgtype"] == "textcard"
+    assert card["url"].startswith("https://new.hnair.com/")
+    assert "orgCity=SZX" in card["url"] and "dstCity=SYX" in card["url"]
+    assert card["btntxt"] == "查看航班"
+    assert "hna2app://" not in card["description"]
+    assert "航班：HU7701" in card["description"]
+    md = channels.wecom_link_markdown("低价", f"航班：HU7701\n{jump}", False)
+    assert "[查看航班](https://new.hnair.com/" in md
+    assert "hna2app://" not in md
+
+
+def test_apply_task_email_overrides_only_that_message():
+    cfg = {"email": {"receiver": "all@example.com", "host": "smtp.example.com"}, "wecom": {"enabled": True}}
+    routed = channels.apply_task_email(cfg, "a@example.com, b@example.com")
+    assert routed["email"]["receiver"] == "a@example.com, b@example.com"
+    assert routed["email"]["host"] == "smtp.example.com"
+    assert cfg["email"]["receiver"] == "all@example.com"
+    assert channels.apply_task_email(cfg, "") is cfg

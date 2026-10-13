@@ -281,9 +281,10 @@ body {
 /* Route and tables */
 .task-groups { display: flex; flex-direction: column; gap: 12px; }
 .task-group { overflow: hidden; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface); }
-.task-group-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; background: var(--color-raised); }
+.task-group-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 14px; background: var(--color-raised); }
 .task-group-head b { font-size: 16px; }
-.task-group-head span { color: var(--color-muted); font-size: 12px; }
+.task-group-head > span { color: var(--color-muted); font-size: 12px; }
+.task-group-actions { margin-left: auto; }
 .task-date { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 10px 14px 0; border-top: 1px solid var(--color-border); color: var(--color-muted); font-size: 12px; }
 .task-date-label { display: flex; align-items: baseline; gap: 8px; }
 .task-ops-ghost { display: inline-flex; gap: 8px; visibility: hidden; }

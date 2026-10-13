@@ -399,6 +399,7 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
             "dep_time": str(item.get("dep_time", "") or "").strip(),
             "arr_time": str(item.get("arr_time", "") or "").strip(),
         }
+        notify_email = _norm_notify_email(item.get("notify_email")) if "notify_email" in item else ""
         stop = item.get("stop")
         if isinstance(stop, dict) and (stop.get("kind") or stop.get("stops_detail")):
             snapshot["stop"] = stop
@@ -441,6 +442,8 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
                 # 同批转的余票/舱位条件一致：显式指定时覆盖（更严格的监控条件生效）
                 t["min_seats"] = norm_min
                 t["cabins"] = norm_cabins
+            if notify_email:
+                t["notify_email"] = notify_email
             merged += 1
         else:
             task = {
@@ -466,6 +469,8 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
             if has_seat_cfg:
                 task["min_seats"] = norm_min
                 task["cabins"] = norm_cabins
+            if notify_email:
+                task["notify_email"] = notify_email
             existing.append(task)
             idx[key] = len(existing) - 1
             created += 1
@@ -475,11 +480,28 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"created": created, "merged": merged}
 
 
+def _norm_notify_email(value: Any) -> str:
+    """航线单独收件人：逗号/分号/换行分隔，只保留带 @ 的地址。"""
+    raw = str(value or "").replace(";", ",").replace("；", ",").replace("，", ",").replace("\n", ",")
+    kept: List[str] = []
+    seen = set()
+    for part in raw.split(","):
+        addr = part.strip()
+        if "@" not in addr or any(ch.isspace() for ch in addr):
+            continue
+        key = addr.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(addr)
+    return ",".join(kept)
+
+
 def update_tasks(task_ids: List[str], fields: Dict[str, Any]) -> int:
     """按 id 列表更新任务（前端编辑弹窗；分组行一次更新组内全部任务）。
 
     可改字段：from_code/to_code/dates/flight_no/dep_time/arr_time/
-    tiers（多选白名单，空=不限）/min_seats/cabins。
+    tiers（多选白名单，空=不限）/min_seats/cabins/notify_email（本航线收件人，空=用全局收件人）。
     保留：id/enabled/target_price/fare_type/created_at。
     返回受影响条数。
     """
@@ -529,6 +551,8 @@ def update_tasks(task_ids: List[str], fields: Dict[str, Any]) -> int:
                 task["min_seats"] = 1
         if "cabins" in fields:
             task["cabins"] = _norm_cabins(fields.get("cabins"))
+        if "notify_email" in fields:
+            task["notify_email"] = _norm_notify_email(fields.get("notify_email"))
         touched += 1
     if touched:
         _write_json(TASKS_PATH, tasks)

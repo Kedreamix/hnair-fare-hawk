@@ -695,6 +695,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
       tiers: out.tiers || [],
       min_seats: Number(out.min_seats || 1),
       cabins: out.cabins || [],
+      notify_email: out.notify_email || req.backTask?.notify_email || '',
     })
     const safe = (task) => loadFlightDates(task).catch(() => [])
     const [outDates, backDates] = await Promise.all([safe(out), safe(req.backTask)])
@@ -714,7 +715,12 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
     const nextDates = (task, oldDay, newDay) => (
       [...new Set([...(task.dates || []).filter((day) => day !== oldDay), newDay])].sort()
     )
-    const extra = { tiers: v.tiers || [], min_seats: Number(v.min_seats || 1), cabins: v.cabins || [] }
+    const extra = {
+      tiers: v.tiers || [],
+      min_seats: Number(v.min_seats || 1),
+      cabins: v.cabins || [],
+      notify_email: v.notify_email || '',
+    }
     setPairBusy(true)
     try {
       await api.updateTasks(req.outTask.ids || [req.outTask.id], { dates: nextDates(req.outTask, req.outDate, v.outDate), ...extra })
@@ -727,6 +733,40 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
     } finally {
       setPairBusy(false)
     }
+  }
+
+  const routeIds = (row) => [...new Set(row.legs.flatMap((t) => t.ids || [t.id]))]
+  const routeActive = (row) => row.legs.some((t) => {
+    const dates = t.dates || []
+    const paused = new Set(t.disabled_dates || [])
+    if (!dates.length) return t.enabled !== false
+    return dates.some((day) => !paused.has(day))
+  })
+  const routeMail = (row) => {
+    const values = []
+    row.legs.forEach((t) => {
+      String(t.notify_email || '').split(',').map((s) => s.trim()).filter(Boolean).forEach((addr) => {
+        if (!values.includes(addr)) values.push(addr)
+      })
+    })
+    return values
+  }
+  const mailHint = (addrs) => (addrs.length <= 1 ? (addrs[0] || '') : `${addrs[0]} 等 ${addrs.length} 人`)
+
+  const toggleRoute = async (row, enabled) => {
+    try {
+      await api.setTaskEnabled(routeIds(row), enabled)
+      msg.success(enabled ? '整条航线已重新监控' : '整条航线已停止')
+      onChanged()
+    } catch (e) { msg.error(e.message) }
+  }
+
+  const deleteRoute = async (row) => {
+    try {
+      await api.deleteTask(routeIds(row))
+      msg.success(`已删除整条航线：${routeTitle(row)}`)
+      onChanged()
+    } catch (e) { msg.error(e.message) }
   }
 
   const toggleGroup = async (group, enabled) => {
@@ -865,6 +905,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
       tiers: t.tiers || [],
       min_seats: Number(t.min_seats || 1),
       cabins: t.cabins || [],
+      notify_email: t.notify_email || '',
     })
   }
 
@@ -885,6 +926,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
         tiers: v.tiers || [],
         min_seats: Number(v.min_seats || 1),
         cabins: v.cabins || [],
+        notify_email: v.notify_email || '',
       })
       msg.success(r.message || '已更新监控任务')
       setEditRow(null)
@@ -980,12 +1022,35 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
           </Empty>
         ) : (
           <div className="task-groups">
-            {taskRows.map((row) => (
+            {taskRows.map((row) => {
+              const rowOn = routeActive(row)
+              const mailTo = routeMail(row)
+              return (
               <section key={row.key} className="task-group">
                 <header className="task-group-head">
                   <b>{routeTitle(row)}</b>
                   <Tag color={row.round ? 'green' : 'default'} style={{ marginInlineEnd: 0 }}>{row.round ? '往返' : '单程'}</Tag>
                   <span>{row.legs.length} 班</span>
+                  {mailTo.length ? <Tag color="gold" style={{ marginInlineEnd: 0 }}>邮件 {mailHint(mailTo)}</Tag> : null}
+                  <div className="task-flight-ops task-group-actions">
+                    <Tooltip title={rowOn ? '停止这条航线的全部航班和日期' : '重新监控这条航线的全部航班和日期'}>
+                      <Button size="small" type={rowOn ? 'default' : 'primary'} icon={<PowerIcon />} onClick={() => toggleRoute(row, !rowOn)}>
+                        {rowOn ? '停止' : '启动'}
+                      </Button>
+                    </Tooltip>
+                    <Popconfirm
+                      title={`删除整条航线 ${routeTitle(row)}`}
+                      description="去程、回程和所有日期一起删掉。价格历史保留，不可撤销。"
+                      okText="删除"
+                      cancelText="取消"
+                      okButtonProps={{ danger: true }}
+                      onConfirm={() => deleteRoute(row)}
+                    >
+                      <Tooltip title="删除">
+                        <Button size="small" type="text" danger icon={<DeleteIcon />} aria-label={`删除 ${routeTitle(row)}`} />
+                      </Tooltip>
+                    </Popconfirm>
+                  </div>
                 </header>
                 {monitorDateGroups(row.legs).map((group) => {
                   const roundReq = row.round ? roundDetailRequest(group) : null
@@ -1109,7 +1174,8 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                   )
                 })}
               </section>
-            ))}
+              )
+            })}
           </div>
         )}
       </Card>
@@ -1226,6 +1292,20 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
               </Form.Item>
             </Col>
           </Row>
+          <Form.Item
+            name="notify_email"
+            label="邮件收件人"
+            extra="留空就用通知管理里的收件人。多个邮箱用逗号分开。只影响这一班。"
+            rules={[{
+              validator: (_, value) => {
+                const parts = String(value || '').split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean)
+                if (parts.some((part) => !part.includes('@'))) return Promise.reject(new Error('收件人要写成邮箱，多个用逗号分开'))
+                return Promise.resolve()
+              },
+            }]}
+          >
+            <Input placeholder="name@example.com, other@example.com" />
+          </Form.Item>
           {editRow && (editRow.ids || []).length > 1 && (
             <Alert type="warning" showIcon message={`该组包含 ${editRow.ids.length} 条底层任务（同一航班的多个监控日期），保存将对组内全部任务生效。`} />
           )}
@@ -1310,6 +1390,20 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
               </Form.Item>
             </Col>
           </Row>
+          <Form.Item
+            name="notify_email"
+            label="邮件收件人"
+            extra="留空就用通知管理里的收件人。多个邮箱用逗号分开。去程和回程这一组都用这份名单。"
+            rules={[{
+              validator: (_, value) => {
+                const parts = String(value || '').split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean)
+                if (parts.some((part) => !part.includes('@'))) return Promise.reject(new Error('收件人要写成邮箱，多个用逗号分开'))
+                return Promise.resolve()
+              },
+            }]}
+          >
+            <Input placeholder="name@example.com, other@example.com" />
+          </Form.Item>
         </Form>
       </Modal>
     </div>
@@ -4578,7 +4672,7 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
         <div className="weekend-map-legend">
           {variant === 'overview' ? (
             <>
-              <span><i className="map-dot is-soft-round" />绿 有去有回</span>
+              <span><i className="map-dot is-soft-round" />绿 往返</span>
               <span><i className="map-dot is-soft-out" />橙 只有去</span>
               <span><i className="map-dot is-soft-back" />蓝 只有回</span>
               <span><i className="map-dot is-soft-solid" />实心 666</span>
@@ -4936,6 +5030,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
   const [batchMinSeats, setBatchMinSeats] = useState(0) // 0=不限
   const [batchCabins, setBatchCabins] = useState([]) // 舱位白名单，空=不限
   const [batchTier, setBatchTier] = useState([]) // 档位条件多选白名单：666/2666/66666；空数组=不限（全部档位）
+  const [batchMail, setBatchMail] = useState('')
   const [batchSummary, setBatchSummary] = useState(null)
   const [batchMode, setBatchMode] = useState('single') // 弹窗标题模式：single=转为监控任务 / batch=批量转为监控任务
   const [roundTrip, setRoundTrip] = useState(false)
@@ -4946,6 +5041,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
   // 默认不冻结（用户手动开启）
   const [freezeQuery, setFreezeQuery] = useState(false)
   const queryCardRef = useRef(null)
+  const resultCardRef = useRef(null)
 
   // 默认停在周末雷达，它的「目的地」与往返/单程共用 to 字段：首屏不回填到达地，切到往返/单程时再补
   useEffect(() => {
@@ -5462,6 +5558,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
     setBatchMinSeats(0)
     setBatchCabins([])
     setBatchTier([])
+    setBatchMail('')
     setBatchOpen(true)
   }
 
@@ -5519,6 +5616,11 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
   }
 
   const confirmBatch = async () => {
+    const mailParts = String(batchMail || '').split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean)
+    if (mailParts.some((part) => !part.includes('@'))) {
+      msg.error('收件人要写成邮箱，多个用逗号分开')
+      return
+    }
     const items = batchGroups
       .filter((g) => g.direction !== 'back' || g.checked)
       .filter((g) => g.dates.length)
@@ -5537,6 +5639,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
         // 余票/舱位监控条件：至少 N 张（≥2 才显式写入，1/不限=默认）+ 舱位白名单
         if (batchMinSeats >= 2) item.min_seats = batchMinSeats
         if (batchCabins.length) item.cabins = batchCabins
+        if (mailParts.length) item.notify_email = mailParts.join(',')
         return item
       })
       .filter((it) => it.dates.length)
@@ -6244,6 +6347,14 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
           const heatBoth = heatCards.filter((card) => card.trip === 'round').length
           const heatOut = heatCards.filter((card) => card.trip === 'out').length
           const heatBack = heatCards.filter((card) => card.trip === 'back').length
+          const pickHeatCity = async (card) => {
+            const label = matchOriginLabel(linkOpts.to, card.city) || card.city
+            form.setFieldsValue({ to: label })
+            await submit({ ...form.getFieldsValue(), to: label })
+            window.setTimeout(() => {
+              resultCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+            }, 80)
+          }
           return (
             <div style={{ marginTop: 16 }}>
               <div className="weekend-summary">
@@ -6251,17 +6362,17 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
                   <div className="weekend-summary-title">{heatFroms || '所选城市'} 出发 · 可以去这些地方</div>
                   <div className="weekend-summary-sub">
                     {heatSpan}
-                    {heatCards.length ? <> · <b>{heatCards.length}</b> 个城市 · 有去有回 <b>{heatBoth}</b> · 只有去 <b>{heatOut}</b> · 只有回 <b>{heatBack}</b></> : ''}
+                    {heatCards.length ? <> · <b>{heatCards.length}</b> 个城市 · 往返 <b>{heatBoth}</b> · 只有去 <b>{heatOut}</b> · 只有回 <b>{heatBack}</b></> : ''}
                   </div>
                 </div>
-                <span className="weekend-summary-note">绿是有去有回，橙是只有去，蓝是只有回。实心 666，空心 2666。</span>
+                <span className="weekend-summary-note">绿是往返，橙是只有去，蓝是只有回。实心 666，空心 2666。</span>
               </div>
               {onewayHeatErr ? <Alert style={{ marginBottom: 12 }} type="error" showIcon message={onewayHeatErr} /> : null}
               {heatCards.length > 0 && (
                 <div className="date-quick" style={{ marginBottom: 10 }}>
                   {[
                     { key: 'all', label: `全部方向（${heatCards.length}）` },
-                    { key: 'round', label: `有去有回（${heatBoth}）` },
+                    { key: 'round', label: `往返（${heatBoth}）` },
                     { key: 'out', label: `只有去（${heatOut}）` },
                     { key: 'back', label: `只有回（${heatBack}）` },
                   ].map((item) => (
@@ -6299,11 +6410,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
                   filter={reachFilter}
                   tripFilter={heatDir}
                   variant="overview"
-                  onPick={(card) => {
-                    const label = matchOriginLabel(linkOpts.to, card.city) || card.city
-                    form.setFieldsValue({ to: label })
-                    submit({ ...form.getFieldsValue(), to: label })
-                  }}
+                  onPick={pickHeatCity}
                 />
               ) : null}
             </div>
@@ -6405,6 +6512,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
       )}
 
       {result && (
+        <div ref={resultCardRef}>
         <Card
           title={result.round
             ? `查询结果（去程 ${flightGroups.filter((g) => g.leg !== 'back').length} 个航班，回程 ${flightGroups.filter((g) => g.leg === 'back').length} 个航班）`
@@ -6512,6 +6620,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
             locale={{ emptyText: <Empty description="没有符合条件的航班，换个条件试试" /> }}
           />
         </Card>
+        </div>
       )}
 
       <Modal
@@ -6575,6 +6684,14 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
             />
           </Col>
         </Row>
+        <div style={{ marginBottom: 12 }}>
+          <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>邮件收件人（空=用通知管理里的收件人，多个用逗号分开）</div>
+          <Input
+            value={batchMail}
+            placeholder="name@example.com, other@example.com"
+            onChange={(e) => setBatchMail(e.target.value)}
+          />
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
           <Switch size="small" checked={roundTrip} disabled={roundBusy} onChange={toggleRoundTrip} />
           <span>同时监控回程</span>

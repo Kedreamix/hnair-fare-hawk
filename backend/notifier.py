@@ -72,6 +72,8 @@ def fake_price_hit_payload() -> tuple[str, str]:
         "档位：666（PLUS专享）\n"
         "价格：388 元\n"
         "余票：9 张\n"
+        "时刻：08:00 起飞 → 11:20 到达\n"
+        f"查询时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         "---\n"
         "⚠️ 模拟数据：仅用于测试通知通道，不影响真实监控\n"
         + hna_jump_block("SHA", "SYX", "2026-09-05", "HU7655")

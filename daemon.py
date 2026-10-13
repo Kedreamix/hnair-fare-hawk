@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 import portalocker
 
-from backend.channels import build_confirm_card, hna_jump_block, notify_channels
+from backend.channels import apply_task_email, build_confirm_card, hna_jump_block, notify_channels
 import backend.feishu_ws as feishu_ws  # noqa: E402
 from backend.fetcher import TokenExpiredError, fetch_price_status
 from backend.notifier import (
@@ -431,6 +431,37 @@ def _task_seat_ok(task: Dict[str, Any], item: Dict[str, Any]) -> bool:
         return True
 
 
+def _time_lines(task: Dict[str, Any], item: Dict[str, Any]) -> str:
+    """提醒里的起飞到达时刻、经停和这次查询时间。没有时刻就略过那一行。"""
+    times = item.get("times") if isinstance(item.get("times"), dict) else {}
+    dep = str(times.get("dep") or task.get("dep_time") or "").strip()
+    arr = str(times.get("arr") or task.get("arr_time") or "").strip()
+    dep_term = str(times.get("dep_terminal") or "").strip()
+    arr_term = str(times.get("arr_terminal") or "").strip()
+
+    def stamp(hhmm: str, terminal: str) -> str:
+        if not hhmm:
+            return ""
+        return f"{hhmm} {terminal}".strip() if terminal else hhmm
+
+    left, right = stamp(dep, dep_term), stamp(arr, arr_term)
+    lines: List[str] = []
+    if left and right:
+        lines.append(f"时刻：{left} 起飞 → {right} 到达")
+    elif left:
+        lines.append(f"时刻：{left} 起飞")
+    elif right:
+        lines.append(f"时刻：{right} 到达")
+    stop = item.get("stop") if isinstance(item.get("stop"), dict) else {}
+    via = [str(v).strip() for v in (stop.get("via") or []) if str(v).strip()]
+    if stop.get("kind") == "stopover" and via:
+        lines.append(f"经停：{'、'.join(via)}")
+    elif stop.get("kind") == "transfer" and via:
+        lines.append(f"中转：{'、'.join(via)}")
+    lines.append(f"查询时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    return "\n".join(lines)
+
+
 def _seat_summary(item: Dict[str, Any]) -> str:
     """人类可读的余票/舱位摘要，如「余票 12 张（B舱10 · Z舱2）」。"""
     seats = item.get("seats")
@@ -753,7 +784,8 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
                 f"类型：{hit['fare_label']}（目标 ≤ {target_price} 元，已达标 ✅）\n"
                 f"档位：{tier_text(item.get('tiers'))}\n"
                 f"价格：{price} 元\n"
-                f"余票：{seat_text}{cabin_extra}"
+                f"余票：{seat_text}{cabin_extra}\n"
+                + _time_lines(alert_task, item)
                 + (f"\n{companion}" if companion else "")
                 + "\n"
                 + hna_jump_block(from_code, to_code, date, flight)
@@ -762,7 +794,7 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
                 alert_title, alert_content, callback_key="price_alert", action_value=fingerprint
             )
             notify_results = notify_channels(
-                cfg=notify_cfg,
+                cfg=apply_task_email(notify_cfg, alert_task.get("notify_email")),
                 level="important",
                 title=alert_title,
                 content=alert_content,

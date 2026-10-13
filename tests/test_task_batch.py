@@ -64,6 +64,22 @@ def test_add_tasks_batch_creates_new(app_env):
     assert t["flight_no"] == "HU1234"
     assert t["dep_time"] == "08:00"
     assert t["arr_time"] == "10:00"
+    mailed = app_mod.add_tasks_batch([{
+        "from_code": "CAN", "to_code": "SYX", "dates": ["2026-10-01"], "product": "666",
+        "flight_no": "HU7001", "dep_time": "09:00", "arr_time": "11:30",
+        "notify_email": " a@example.com，a@example.com ",
+    }])
+    assert mailed["created"] == 1
+    saved = next(row for row in _read_tasks(app_env) if row["flight_no"] == "HU7001")
+    assert saved["notify_email"] == "a@example.com"
+    app_mod.add_tasks_batch([{
+        "from_code": "CAN", "to_code": "SYX", "dates": ["2026-10-02"], "product": "666",
+        "flight_no": "HU7001", "dep_time": "09:00", "arr_time": "11:30",
+        "notify_email": "b@example.com",
+    }])
+    saved = next(row for row in _read_tasks(app_env) if row["flight_no"] == "HU7001")
+    assert saved["dates"] == ["2026-10-01", "2026-10-02"]
+    assert saved["notify_email"] == "b@example.com"
 
 
 def test_add_tasks_batch_same_flight_merges_dates(app_env):
@@ -316,6 +332,11 @@ def test_update_tasks_fields(app_env):
     assert t3["tier"] == "all"
     # 未知 id 不影响
     assert app_mod.update_tasks(["nope"], {"tiers": ["666"]}) == 0
+    app_mod.update_tasks([orig_id], {"notify_email": " A@Example.com，a@example.com; bad not-an-email "})
+    t4 = _read_tasks(app_env)[0]
+    assert t4["notify_email"] == "A@Example.com"
+    app_mod.update_tasks([orig_id], {"notify_email": ""})
+    assert _read_tasks(app_env)[0]["notify_email"] == ""
 
 
 def test_daemon_task_tier_ok_multi(app_env):

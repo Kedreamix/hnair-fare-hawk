@@ -422,6 +422,9 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             # 余票/舱位监控条件：取组内最严（min_seats 最大），舱位白名单取并集
             "min_seats": max(int(t.get("min_seats", 1) or 1) for t in group),
             "cabins": sorted({str(c).strip().upper() for t in group for c in (t.get("cabins") or []) if str(c).strip()}),
+            "notify_email": ",".join(dict.fromkeys(
+                str(t.get("notify_email") or "").strip() for t in group if str(t.get("notify_email") or "").strip()
+            )),
             "enabled": any(bool(t.get("enabled", True)) for t in group),
             "disabled_dates": sorted({
                 str(d).strip() for t in group for d in (t.get("disabled_dates") or []) if str(d).strip()
@@ -983,6 +986,8 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             if "cabins" in it:
                 item["cabins"] = it.get("cabins")
+            if "notify_email" in it:
+                item["notify_email"] = str(it.get("notify_email") or "")
             stop = it.get("stop")
             if isinstance(stop, dict):
                 item["stop"] = stop

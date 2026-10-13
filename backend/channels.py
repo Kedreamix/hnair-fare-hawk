@@ -65,7 +65,7 @@ def hna_web_url(from_code: str, to_code: str, day: str, flight: str = "") -> str
 
 
 def hna_jump_block(from_code: str, to_code: str, day: str, flight: str = "") -> str:
-    """提醒正文末尾的跳转地址。邮件会把这两行变成可点链接。"""
+    """提醒正文末尾的跳转地址。邮件发送时会去掉官网这一行。"""
     app_url = hna_app_url(from_code, to_code, day)
     web_url = hna_web_url(from_code, to_code, day, flight)
     lines = []
@@ -93,19 +93,74 @@ def _first_match(pattern: re.Pattern[str], content: str) -> str:
     return matched.group(0) if matched else ""
 
 
-def _email_html(content: str) -> str:
-    """纯文本转 HTML，并把 App / 官网地址换成带文字的链接。"""
-    text = str(content or "")
-    pattern = re.compile(r"hna2app://\S+|https://new\.hnair\.com/\S+")
+def _wecom_plain_lines(content: str) -> list[str]:
+    """去掉跳转原文。企业微信打不开 hna2app，网址要单独做成可点的卡片。"""
+    lines = []
+    for line in str(content or "").splitlines():
+        if line.startswith("打开海航 App：") or line.startswith("官网查询："):
+            continue
+        text = line.strip()
+        if text:
+            lines.append(text)
+    return lines
+
+
+def _wecom_description(content: str) -> str:
+    """文本卡片说明，最长约 512 字节。"""
     chunks = []
-    last = 0
-    for matched in pattern.finditer(text):
-        chunks.append(html.escape(text[last:matched.start()]).replace("\n", "<br>\n"))
-        url = matched.group(0)
-        label = "打开海航 App" if url.startswith("hna2app://") else "打开官网查询"
-        chunks.append(f'<p><a href="{html.escape(url, quote=True)}">{label}</a></p>')
-        last = matched.end()
-    chunks.append(html.escape(text[last:]).replace("\n", "<br>\n"))
+    used = 0
+    for line in _wecom_plain_lines(content):
+        piece = html.escape(line)
+        extra = len(piece.encode("utf-8")) + (4 if chunks else 0)
+        if chunks and used + extra > 500:
+            break
+        chunks.append(piece)
+        used += extra
+    return "<br>".join(chunks)
+
+
+def wecom_link_markdown(title: str, content: str, urgent: bool) -> str:
+    """机器人消息里的官网地址做成可点链接。"""
+    heading = f"## ⚠️ {title}" if urgent else f"## {title}"
+    body = "\n".join(_wecom_plain_lines(content))
+    web_url = _first_match(_WEB_URL_RE, content)
+    if web_url.startswith("http://") or web_url.startswith("https://"):
+        link = f"[查看航班]({web_url})"
+        body = f"{body}\n\n{link}" if body else link
+    return _trim_utf8(f"{heading}\n\n{body}".strip(), 20000)
+
+
+def apply_task_email(cfg: Dict[str, Any], notify_email: str) -> Dict[str, Any]:
+    """某条航线单独指定收件人时，只替换这一封邮件的收件人。"""
+    text = str(notify_email or "").strip()
+    if not text:
+        return cfg
+    copied = dict(cfg)
+    email_cfg = dict(copied.get("email") or {})
+    email_cfg["receiver"] = text
+    copied["email"] = email_cfg
+    return copied
+
+
+def _email_text(content: str) -> str:
+    """邮件只保留 App 跳转，去掉官网地址。"""
+    kept = []
+    for line in str(content or "").splitlines():
+        if line.startswith("官网查询：") or "https://new.hnair.com/" in line:
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def _email_html(content: str) -> str:
+    """纯文本转 HTML。App 那一行只显示一个「打开海航 App」链接。"""
+    chunks = []
+    for line in _email_text(content).splitlines():
+        if line.startswith("打开海航 App："):
+            url = line.split("：", 1)[1].strip()
+            chunks.append(f'<p><a href="{html.escape(url, quote=True)}">打开海航 App</a></p>')
+            continue
+        chunks.append(html.escape(line) + "<br>\n")
     body = "".join(chunks)
     return (
         "<html><body style=\"font-family:sans-serif;line-height:1.6\">"
@@ -173,21 +228,36 @@ def send_wecom(cfg: Dict[str, Any], title: str, content: str, urgent: bool) -> t
     if not token:
         return False, "获取企业微信 access_token 失败，请检查企业ID/Secret 是否正确", ""
 
-    # 加急时用 markdown 醒目样式，普通用纯文本
-    if urgent:
-        md_content = f"**🚨 {title}**\n> {content}".replace("\n", "\n> ")
+    agent = int(agent_id) if agent_id.isdigit() else agent_id
+    web_url = _first_match(_WEB_URL_RE, content)
+    # 企业微信只认 http/https。纯文本里的 hna2app 点不开，文本卡片用官网查询页作为整张卡片的跳转。
+    if web_url.startswith("http://") or web_url.startswith("https://"):
+        card_title = _trim_utf8((f"🚨 {title}" if urgent else title).strip() or "海航监控", 120)
+        payload = {
+            "touser": user_id,
+            "msgtype": "textcard",
+            "agentid": agent,
+            "textcard": {
+                "title": card_title,
+                "description": _wecom_description(content) or "有一条航班提醒",
+                "url": web_url,
+                "btntxt": "查看航班",
+            },
+            "safe": 0,
+        }
+    elif urgent:
         payload = {
             "touser": user_id,
             "msgtype": "markdown",
-            "agentid": int(agent_id) if agent_id.isdigit() else agent_id,
-            "markdown": {"content": md_content},
+            "agentid": agent,
+            "markdown": {"content": wecom_link_markdown(title, content, True)},
             "safe": 0,
         }
     else:
         payload = {
             "touser": user_id,
             "msgtype": "text",
-            "agentid": int(agent_id) if agent_id.isdigit() else agent_id,
+            "agentid": agent,
             "text": {"content": f"{title}\n{content}"},
             "safe": 0,
         }
@@ -264,8 +334,7 @@ def send_wechat_bot(cfg: Dict[str, Any], title: str, content: str, urgent: bool)
     chat_type = 1
     if not (bot_id and secret and chat_id):
         return False, "企业微信机器人配置不完整（需要机器人 ID、Secret、接收人）", ""
-    heading = f"## {title}" if not urgent else f"## ⚠️ {title}"
-    body = _trim_utf8(f"{heading}\n\n{content}", 20000)
+    body = wecom_link_markdown(title, content, urgent)
     try:
         aibot_send_markdown(bot_id, secret, chat_id, chat_type, body)
     except ImportError:
