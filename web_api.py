@@ -42,6 +42,7 @@ from app import (  # noqa: E402
     load_config,
     read_last_log_lines,
     read_notify_history,
+    read_low_price_history,
     read_price_history,
     save_curl,
     save_feishu,
@@ -274,14 +275,15 @@ def _build_state() -> Dict[str, Any]:
     tasks_data = json.loads(raw) if raw else {"tasks": []}
     tasks = tasks_data.get("tasks", [])
 
-    history = read_price_history(50)
+    recent = read_price_history(50)
+    history = read_low_price_history(50)
     logs = _read_logs(LOG_PATH, line_count=200)
 
-    # 统计（从历史里聚合）
-    hit_count = sum(1 for r in history if int(r.get("price") or 0) <= int(
+    # 统计仍按文件末尾 50 行计算，概览卡片上的数字含义不变
+    hit_count = sum(1 for r in recent if int(r.get("price") or 0) <= int(
         _task_target(tasks, r.get("task_id", ""), r.get("date", ""),
                      r.get("from", ""), r.get("to", ""), r.get("fare_type", ""))
-    )) if history else 0
+    )) if recent else 0
 
     return {
         "config": _sanitize_config(config),
@@ -314,7 +316,7 @@ def _build_state() -> Dict[str, Any]:
             "task_count": len(tasks),
             "enabled_count": sum(1 for t in tasks if t.get("enabled", True)),
             "hit_count_24h": hit_count,
-            "history_count": len(history),
+            "history_count": len(recent),
         },
         "logs": logs,
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

@@ -764,6 +764,37 @@ def read_price_history(line_count: int = 50) -> List[Dict[str, Any]]:
     return records
 
 
+def read_low_price_history(limit: int = 50, max_price: int = 500) -> List[Dict[str, Any]]:
+    """从文件末尾往前收集价格不超过 max_price 的记录，最多 limit 条，按时间正序返回。"""
+    if limit <= 0 or not HISTORY_PATH.exists():
+        return []
+    try:
+        lines = HISTORY_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    picked: List[Dict[str, Any]] = []
+    for line in reversed(lines):
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            record = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        price = record.get("price")
+        if isinstance(price, bool) or not isinstance(price, (int, float)):
+            continue
+        if price > max_price:
+            continue
+        picked.append(record)
+        if len(picked) >= limit:
+            break
+    picked.reverse()
+    return picked
+
+
 def _archive_and_reset(path: Path) -> int:
     """将数据文件轮转为备份（保留旧档），然后重建空文件继续写入，返回归档字节数。
 

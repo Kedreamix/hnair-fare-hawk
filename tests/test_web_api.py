@@ -541,3 +541,36 @@ def test_history_records_expose_extra_fields(api_server):
     assert old_row["dep_time"] == "" and old_row["arr_time"] == ""
     assert old_row["seats"] is None
     assert old_row["task_id"] == "t2"
+
+
+def test_low_price_history_keeps_hit_behind_high_prices(api_server):
+    """199 元后面即使跟着几十条高价，最近低价表仍然能看到它。"""
+    base, tmp = api_server
+    rows = [
+        json.dumps({
+            "ts": "2026-10-13T16:09:00",
+            "task_id": "uq",
+            "date": "2026-12-05",
+            "from": "SZX",
+            "to": "URC",
+            "fare_type": "plus",
+            "flight": "UQ2616",
+            "price": 199,
+        })
+    ]
+    for i in range(60):
+        rows.append(json.dumps({
+            "ts": f"2026-10-13T17:{i:02d}:00" if i < 60 else "2026-10-13T18:00:00",
+            "date": "2026-12-05",
+            "from": "SZX",
+            "to": "URC",
+            "fare_type": "plus",
+            "flight": f"HU{8000 + i}",
+            "price": 2000 + i,
+        }))
+    (tmp / "price_history.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    state = requests.get(f"{base}/api/state", timeout=5).json()
+    history = state["history"]
+    assert any(r.get("flight") == "UQ2616" and r.get("price") == 199 for r in history)
+    assert all(int(r.get("price") or 0) <= 500 for r in history)
+    assert state["stats"]["history_count"] == 50
