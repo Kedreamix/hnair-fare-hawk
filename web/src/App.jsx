@@ -540,23 +540,39 @@ function emailForDay(task, day) {
   return String(task?.notify_email || '').trim()
 }
 
-function shownMail(task, day, globalMail) {
-  const picked = String((task?.notify_email_by_date || {})[day] || '').trim()
-  if (picked) return { addr: picked, custom: true }
-  const flight = String(task?.notify_email || '').trim()
-  if (flight) return { addr: flight, custom: false }
-  return { addr: String(globalMail || '').trim(), custom: false }
+function mailSet(value) {
+  return String(value || '')
+    .split(/[,，;；\s]+/)
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join(',')
 }
 
-function routeMailSummary(row) {
+function sameMail(a, b) {
+  return mailSet(a) === mailSet(b)
+}
+
+function shownMail(task, day, globalMail) {
+  const specific = emailForDay(task, day)
+  const addr = specific || String(globalMail || '').trim()
+  return { addr, custom: Boolean(specific) && !sameMail(specific, globalMail) }
+}
+
+function routeMailSummary(row, globalMail) {
   const kinds = []
+  const seen = new Set()
   const lines = []
   ;(row.legs || []).forEach((task) => {
     ;(task.dates || []).forEach((day) => {
-      const addr = String((task?.notify_email_by_date || {})[day] || '').trim()
-      if (!addr) return
-      if (!kinds.includes(addr)) kinds.push(addr)
-      lines.push(`${monitorDayLabel(day)} ${task.flight_no || ''} ${addr}`.trim())
+      const shown = shownMail(task, day, globalMail)
+      if (!shown.custom) return
+      const key = mailSet(shown.addr)
+      if (!seen.has(key)) {
+        seen.add(key)
+        kinds.push(shown.addr)
+      }
+      lines.push(`${monitorDayLabel(day)} ${task.flight_no || ''} ${shown.addr}`.trim())
     })
   })
   return { kinds, lines }
@@ -1056,7 +1072,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
           <div className="task-groups">
             {taskRows.map((row) => {
               const rowOn = routeActive(row)
-              const mailSummary = routeMailSummary(row)
+              const mailSummary = routeMailSummary(row, globalMail)
               return (
               <section key={row.key} className="task-group">
                 <header className="task-group-head">
