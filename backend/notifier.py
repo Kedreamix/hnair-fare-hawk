@@ -8,7 +8,7 @@ from typing import Dict, Iterable, List, Optional
 
 import requests
 from city_codes import code_to_city_label, code_to_city_only
-from backend.channels import build_confirm_card, send_feishu  # noqa: E402
+from backend.channels import build_confirm_card, hna_jump_block, send_feishu  # noqa: E402
 
 
 def _send_serverchan(send_key: str, title: str, desp: str) -> bool:
@@ -73,7 +73,8 @@ def fake_price_hit_payload() -> tuple[str, str]:
         "价格：388 元\n"
         "余票：9 张\n"
         "---\n"
-        "⚠️ 模拟数据：仅用于测试通知通道，不影响真实监控"
+        "⚠️ 模拟数据：仅用于测试通知通道，不影响真实监控\n"
+        + hna_jump_block("SHA", "SYX", "2026-09-05", "HU7655")
     )
     return title, content
 
@@ -109,7 +110,8 @@ def send_price_alert(
         + (f"**{extra}**\n\n" if extra else "")
         + "---\n\n"
         f"⏰ 查询时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        "👉 价格已达标，建议尽快打开海航 App / 官网查询下单"
+        "👉 价格已达标，建议尽快打开海航 App / 官网查询下单\n\n"
+        + hna_jump_block(from_code, to_code, str(task.get("date", "") or ""), flight)
     )
     for key in keys:
         results[key] = _send_serverchan(key, title, desp)
@@ -152,7 +154,8 @@ def send_test_alert(send_keys: Iterable[str]) -> Dict[str, bool]:
         "**价格**：**388 元**\n\n"
         "**余票**：9 张\n\n"
         "---\n\n"
-        "⚠️ 模拟数据：仅用于测试通知通道，不影响真实监控"
+        "⚠️ 模拟数据：仅用于测试通知通道，不影响真实监控\n\n"
+        + hna_jump_block("SHA", "SYX", "2026-09-05", "HU7655")
     )
 
     for key in keys:
@@ -244,7 +247,8 @@ def _feishu_price_text(task: Dict, flight: str, price: int) -> tuple[str, str]:
         f"价格：{price} 元\n"
         "\n"
         f"⏰ 查询时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        "👉 价格已达标，建议尽快打开海航 App / 官网查询下单"
+        "👉 价格已达标，建议尽快打开海航 App / 官网查询下单\n"
+        + hna_jump_block(from_code, to_code, str(task.get("date", "") or ""), flight)
     )
     return title, content
 

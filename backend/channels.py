@@ -17,7 +17,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import html
 import json
+import re
 import smtplib
 import time
 import urllib.parse
@@ -26,6 +28,90 @@ from email.mime.text import MIMEText
 from typing import Any, Dict, Optional
 
 import requests
+
+# ==================== 海航跳转 ====================
+
+_APP_URL_RE = re.compile(r"hna2app://\S+")
+_WEB_URL_RE = re.compile(r"https://new\.hnair\.com/\S+")
+
+
+def hna_app_url(from_code: str, to_code: str, day: str) -> str:
+    """海航 App 搜索页。与控制台「打开 App」同一套 scheme。"""
+    origin = str(from_code or "").strip().upper()
+    dest = str(to_code or "").strip().upper()
+    date = str(day or "").strip()
+    if not (origin and dest and date):
+        return ""
+    return (
+        "hna2app://app.hnar.com?url=searchIndex"
+        f"&params={{depCode:{origin},dstCode:{dest},startTime:{date},tripType:1}}"
+    )
+
+
+def hna_web_url(from_code: str, to_code: str, day: str, flight: str = "") -> str:
+    """官网查询页，给打不开 App 的客户端用。"""
+    origin = str(from_code or "").strip().upper()
+    dest = str(to_code or "").strip().upper()
+    date = str(day or "").strip()
+    if not (origin and dest and date):
+        return ""
+    params = urllib.parse.urlencode({
+        "orgCity": origin,
+        "dstCity": dest,
+        "takeoffDate": date,
+        "flightNo": str(flight or "").strip().upper(),
+    })
+    return f"https://new.hnair.com/hainanair/ibe/common/flightSearch.do?{params}"
+
+
+def hna_jump_block(from_code: str, to_code: str, day: str, flight: str = "") -> str:
+    """提醒正文末尾的跳转地址。邮件会把这两行变成可点链接。"""
+    app_url = hna_app_url(from_code, to_code, day)
+    web_url = hna_web_url(from_code, to_code, day, flight)
+    lines = []
+    if app_url:
+        lines.append(f"打开海航 App：{app_url}")
+    if web_url:
+        lines.append(f"官网查询：{web_url}")
+    return "\n".join(lines)
+
+
+def _card_markdown(content: str) -> str:
+    """卡片正文过长时截断说明，跳转地址始终保留。"""
+    lines = str(content or "").splitlines()
+    jump = [line for line in lines if line.startswith("打开海航 App：") or line.startswith("官网查询：")]
+    body = "\n".join(line for line in lines if line not in jump).strip()
+    if len(body) > 500:
+        body = body[:497] + "..."
+    if jump:
+        body = f"{body}\n\n" + "\n".join(jump) if body else "\n".join(jump)
+    return body
+
+
+def _first_match(pattern: re.Pattern[str], content: str) -> str:
+    matched = pattern.search(str(content or ""))
+    return matched.group(0) if matched else ""
+
+
+def _email_html(content: str) -> str:
+    """纯文本转 HTML，并把 App / 官网地址换成带文字的链接。"""
+    text = str(content or "")
+    pattern = re.compile(r"hna2app://\S+|https://new\.hnair\.com/\S+")
+    chunks = []
+    last = 0
+    for matched in pattern.finditer(text):
+        chunks.append(html.escape(text[last:matched.start()]).replace("\n", "<br>\n"))
+        url = matched.group(0)
+        label = "打开海航 App" if url.startswith("hna2app://") else "打开官网查询"
+        chunks.append(f'<p><a href="{html.escape(url, quote=True)}">{label}</a></p>')
+        last = matched.end()
+    chunks.append(html.escape(text[last:]).replace("\n", "<br>\n"))
+    body = "".join(chunks)
+    return (
+        "<html><body style=\"font-family:sans-serif;line-height:1.6\">"
+        f"{body}</body></html>"
+    )
+
 
 # ==================== 工具 ====================
 
@@ -209,7 +295,7 @@ def send_email(cfg: Dict[str, Any], title: str, content: str, urgent: bool) -> t
         return False, "邮件配置不完整（需要服务器、登录账号、授权码、发件人和收件人）", ""
 
     subject = f"【加急】{title}" if urgent else title
-    message = MIMEText(content, "plain", "utf-8")
+    message = MIMEText(_email_html(content), "html", "utf-8")
     message["From"] = sender
     message["To"] = ",".join(receivers)
     message["Subject"] = subject
@@ -292,6 +378,9 @@ def send_bark(cfg: Dict[str, Any], title: str, content: str, urgent: bool) -> tu
         "level": "timeSensitive" if urgent else "active",
         "sound": "alarm.caf" if urgent else "default",
     }
+    app_url = _first_match(_APP_URL_RE, content)
+    if app_url:
+        payload["url"] = app_url
     try:
         data = _post_json(f"{server.rstrip('/')}/push", payload)
     except requests.RequestException as exc:
@@ -314,6 +403,9 @@ def send_ntfy(cfg: Dict[str, Any], title: str, content: str, urgent: bool) -> tu
         "Priority": "5" if urgent else "3",
         "Tags": "rotating_light" if urgent else "ticket",
     }
+    app_url = _first_match(_APP_URL_RE, content)
+    if app_url:
+        headers["Click"] = app_url
     try:
         resp = requests.post(
             f"{server.rstrip('/')}/{topic.lstrip('/')}",
@@ -432,7 +524,44 @@ def build_confirm_card(
     - 按钮 callback 带 callback_key 与 action_value，卡片回调后由回调处理更新；
     - 卡片自带「普通确认」与「忽略」两个按钮。
     """
-    content_short = content if len(content) <= 600 else content[:597] + "..."
+    content_short = _card_markdown(content)
+    actions: list[Dict[str, Any]] = [
+        {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "✅ 确认已处理"},
+            "type": "primary",
+            "value": {"callback_key": callback_key, "action": action_value, "confirm": "1"},
+        },
+        {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "忽略"},
+            "type": "default",
+            "value": {"callback_key": callback_key, "action": action_value, "confirm": "0"},
+        },
+    ]
+    app_url = _first_match(_APP_URL_RE, content)
+    web_url = _first_match(_WEB_URL_RE, content)
+    if app_url:
+        jump = {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "打开海航 App"},
+            "type": "primary",
+            "url": app_url,
+            "multi_url": {
+                "url": app_url,
+                "android_url": app_url,
+                "ios_url": app_url,
+                "pc_url": web_url or app_url,
+            },
+        }
+        actions.append(jump)
+    if web_url:
+        actions.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "官网查询"},
+            "type": "default",
+            "url": web_url,
+        })
     return {
         # update_multi 必须为 true：更新已发送卡片接口要求更新前后卡片都显式声明为共享卡片，
         # 否则 PATCH 返回 code=0 但用户端内容不更新（按钮不消失）。
@@ -440,23 +569,7 @@ def build_confirm_card(
         "header": {"template": "red" if "🚨" in title else "blue", "title": {"tag": "plain_text", "content": title}},
         "elements": [
             {"tag": "markdown", "content": content_short},
-            {
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "✅ 确认已处理"},
-                        "type": "primary",
-                        "value": {"callback_key": callback_key, "action": action_value, "confirm": "1"},
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "忽略"},
-                        "type": "default",
-                        "value": {"callback_key": callback_key, "action": action_value, "confirm": "0"},
-                    },
-                ],
-            },
+            {"tag": "action", "actions": actions},
         ],
     }
 

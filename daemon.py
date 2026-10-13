@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 import portalocker
 
-from backend.channels import build_confirm_card, notify_channels
+from backend.channels import build_confirm_card, hna_jump_block, notify_channels
 import backend.feishu_ws as feishu_ws  # noqa: E402
 from backend.fetcher import TokenExpiredError, fetch_price_status
 from backend.notifier import (
@@ -755,6 +755,8 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
                 f"价格：{price} 元\n"
                 f"余票：{seat_text}{cabin_extra}"
                 + (f"\n{companion}" if companion else "")
+                + "\n"
+                + hna_jump_block(from_code, to_code, date, flight)
             )
             card = build_confirm_card(
                 alert_title, alert_content, callback_key="price_alert", action_value=fingerprint

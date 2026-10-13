@@ -14,6 +14,7 @@
 import json
 import os
 import sys
+from email import message_from_string
 from pathlib import Path
 
 import pytest
@@ -308,6 +309,86 @@ def test_wechat_bot_and_email_send_without_leaking(monkeypatch):
 
     ok, err, _mid = channels.send_email({"host": "smtp.example.com"}, "t", "c", False)
     assert not ok and "不完整" in err
+
+
+def test_price_alert_includes_clickable_app_jump(monkeypatch):
+    jump = channels.hna_jump_block("SZX", "SYX", "2026-10-20", "HU7701")
+    assert "hna2app://app.hnar.com" in jump
+    assert "depCode:SZX" in jump and "dstCode:SYX" in jump and "startTime:2026-10-20" in jump
+    assert "flightNo=HU7701" in jump
+    assert channels.hna_app_url("", "SYX", "2026-10-20") == ""
+
+    sent = {}
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=15):
+            sent["port"] = port
+
+        def login(self, user, password):
+            return (235, b"ok")
+
+        def sendmail(self, sender, receivers, raw):
+            sent["raw"] = raw
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(channels.smtplib, "SMTP_SSL", FakeSMTP)
+    ok, err, _mid = channels.send_email(
+        {
+            "host": "smtp.example.com",
+            "port": "465",
+            "username": "mailbox",
+            "password": "auth-code",
+            "sender": "mailbox@qq.com",
+            "receiver": "b@example.com",
+        },
+        "低价",
+        f"航班：HU7701\n{jump}",
+        False,
+    )
+    assert ok and err == ""
+    mail = message_from_string(sent["raw"])
+    assert mail.get_content_type() == "text/html"
+    body = mail.get_payload(decode=True).decode("utf-8")
+    assert "打开海航 App" in body
+    assert "hna2app://app.hnar.com" in body
+    assert "打开官网查询" in body
+
+    card = channels.build_confirm_card("🎉 深圳→三亚", f"航班：HU7701\n{jump}", callback_key="price_alert", action_value="fp")
+    labels = [btn["text"]["content"] for btn in card["elements"][1]["actions"]]
+    assert "打开海航 App" in labels
+    assert "官网查询" in labels
+    app_btn = next(btn for btn in card["elements"][1]["actions"] if btn["text"]["content"] == "打开海航 App")
+    assert app_btn["url"].startswith("hna2app://")
+    assert "打开海航 App：" in card["elements"][0]["content"]
+
+    bark = {}
+
+    def fake_post(url, payload):
+        bark["url"] = url
+        bark["payload"] = payload
+        return {"code": 200, "messageId": "m1"}
+
+    monkeypatch.setattr(channels, "_post_json", fake_post)
+    ok, err, mid = channels.send_bark({"device_key": "dev"}, "低价", jump, False)
+    assert ok and mid == "m1"
+    assert bark["payload"]["url"].startswith("hna2app://")
+
+    seen = {}
+
+    def fake_ntfy(url, data, headers, timeout):
+        seen["headers"] = headers
+        class Resp:
+            status_code = 200
+            def json(self):
+                return {"id": "n1"}
+        return Resp()
+
+    monkeypatch.setattr(channels.requests, "post", fake_ntfy)
+    ok, err, mid = channels.send_ntfy({"topic": "fare"}, "低价", jump, False)
+    assert ok and mid == "n1"
+    assert seen["headers"]["Click"].startswith("hna2app://")
 
 
 # ==================== feishu_ws 回调 ====================
