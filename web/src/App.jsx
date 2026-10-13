@@ -540,12 +540,20 @@ function emailForDay(task, day) {
   return String(task?.notify_email || '').trim()
 }
 
+function shownMail(task, day, globalMail) {
+  const picked = String((task?.notify_email_by_date || {})[day] || '').trim()
+  if (picked) return { addr: picked, custom: true }
+  const flight = String(task?.notify_email || '').trim()
+  if (flight) return { addr: flight, custom: false }
+  return { addr: String(globalMail || '').trim(), custom: false }
+}
+
 function routeMailSummary(row) {
   const kinds = []
   const lines = []
   ;(row.legs || []).forEach((task) => {
     ;(task.dates || []).forEach((day) => {
-      const addr = emailForDay(task, day)
+      const addr = String((task?.notify_email_by_date || {})[day] || '').trim()
       if (!addr) return
       if (!kinds.includes(addr)) kinds.push(addr)
       lines.push(`${monitorDayLabel(day)} ${task.flight_no || ''} ${addr}`.trim())
@@ -648,6 +656,7 @@ function roundDetailRequest(group) {
 
 function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
   const tasks = data.tasks || []
+  const globalMail = String(data?.config?.notify_channels?.email?.receiver || '').trim()
   // 「只能查/显示当天及以后」：过去日期从所有可选池剔除（编辑弹窗日期选项、档位联动、兜底池）
   const todayStr = dayjs().format('YYYY-MM-DD')
 
@@ -688,6 +697,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
   const [pairBusy, setPairBusy] = useState(false)
   const [pairForm] = Form.useForm()
   const pairOutDate = Form.useWatch('outDate', pairForm)
+  const pairMailScope = Form.useWatch('mail_scope', pairForm)
   useEffect(() => {
     if (!pairEdit || !pairOutDate) return
     const back = pairForm.getFieldValue('backDate')
@@ -889,6 +899,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
   const [editForm] = Form.useForm()
   // 档位条件（多选白名单，空=不限）：编辑弹窗日期池随其联动（档位×日期规则，如 666 节假日不可用）
   const editTiers = Form.useWatch('tiers', editForm)
+  const editMailScope = Form.useWatch('mail_scope', editForm)
 
   // 拉取该航线真实可飞日期（/api/flights/query 的 effective_dates 区间展开成逐日），作为编辑弹窗日期选项；
   // 只保留可飞日期：原任务里无效日期在打开弹窗时剔除
@@ -1135,6 +1146,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                   const seatBits = []
                   if (Number(t.min_seats || 1) > 1) seatBits.push(`≥${t.min_seats}张`)
                   if (t.cabins && t.cabins.length) seatBits.push(t.cabins.join('/'))
+                  const dayMail = day ? shownMail(t, day, globalMail) : null
                   return (
                     <div key={`${group.key}-${legKey(t)}-${day || 'none'}`} className={`task-flight${rowOn ? '' : ' is-paused'}`}>
                       <div className="task-flight-main">
@@ -1153,7 +1165,9 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                           {(t.tiers || []).map((p) => <Tag key={p} style={{ marginInlineEnd: 0 }}>提醒 {p}</Tag>)}
                           {seatBits.map((bit) => <Tag key={bit} color="blue" style={{ marginInlineEnd: 0 }}>{bit}</Tag>)}
                           {stopTag(t)}
-                          {day && emailForDay(t, day) ? <Tag color="gold" style={{ marginInlineEnd: 0 }}>邮件 {emailForDay(t, day)}</Tag> : null}
+                          {dayMail?.custom ? (
+                            <Tag color="gold" style={{ marginInlineEnd: 0 }}>邮件 {dayMail.addr}</Tag>
+                          ) : null}
                           {stopDetail(t) ? <span className="task-flight-dates">{stopDetail(t)}</span> : null}
                         </div>
                       </div>
@@ -1321,7 +1335,13 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
           <Form.Item
             name="notify_email"
             label="邮件收件人"
-            extra="留空就用通知管理里的收件人。多个邮箱用逗号分开。"
+            extra={(() => {
+              const flightMail = String(editRow?.notify_email || '').trim()
+              const blankTo = editMailScope === 'flight' ? globalMail : (flightMail || globalMail)
+              return blankTo
+                ? `留空发给默认收件人 ${blankTo}。多个邮箱用逗号分开。`
+                : '留空就用通知管理里的收件人。多个邮箱用逗号分开。'
+            })()}
             rules={[{
               validator: (_, value) => {
                 const parts = String(value || '').split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean)
@@ -1330,7 +1350,11 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
               },
             }]}
           >
-            <Input placeholder="name@example.com, other@example.com" />
+            <Input placeholder={(() => {
+              const flightMail = String(editRow?.notify_email || '').trim()
+              const blankTo = editMailScope === 'flight' ? globalMail : (flightMail || globalMail)
+              return blankTo ? `留空发给 ${blankTo}` : 'name@example.com, other@example.com'
+            })()} />
           </Form.Item>
           <Form.Item name="mail_scope" label="收件人改动范围">
             <Radio.Group>
@@ -1425,7 +1449,20 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
           <Form.Item
             name="notify_email"
             label="邮件收件人"
-            extra="留空就用通知管理里的收件人。多个邮箱用逗号分开。"
+            extra={(() => {
+              const outMail = pairMailScope === 'flight'
+                ? globalMail
+                : (String(pairEdit?.req?.outTask?.notify_email || '').trim() || globalMail)
+              const backMail = pairMailScope === 'flight'
+                ? globalMail
+                : (String(pairEdit?.req?.backTask?.notify_email || '').trim() || globalMail)
+              const blankTo = outMail && backMail && outMail !== backMail
+                ? `去程 ${outMail}，回程 ${backMail}`
+                : (outMail || backMail)
+              return blankTo
+                ? `留空发给默认收件人 ${blankTo}。多个邮箱用逗号分开。`
+                : '留空就用通知管理里的收件人。多个邮箱用逗号分开。'
+            })()}
             rules={[{
               validator: (_, value) => {
                 const parts = String(value || '').split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean)
@@ -1434,7 +1471,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
               },
             }]}
           >
-            <Input placeholder="name@example.com, other@example.com" />
+            <Input placeholder={globalMail ? `留空发给 ${globalMail}` : 'name@example.com, other@example.com'} />
           </Form.Item>
           <Form.Item name="mail_scope" label="收件人改动范围">
             <Radio.Group>
