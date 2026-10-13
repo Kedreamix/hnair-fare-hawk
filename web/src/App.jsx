@@ -3655,11 +3655,13 @@ function weekendPlanDomId(card) {
 }
 
 function reachKindOf(card, variant) {
+  if (variant === 'overview') return card?.kind === '666' ? '666' : '2666'
   if (variant === 'oneway') return hasProduct((card.outs[0] || card.backs[0])?.product, '666') ? '666' : '2666'
   return reachKind(card)
 }
 
 function reachProductOf(card, variant) {
+  if (variant === 'overview') return card?.kind === '666' ? '666 可用' : '2666 专享'
   if (variant !== 'oneway') return reachProductLabel(card)
   const names = new Set()
   for (const flight of (card.outs?.length ? card.outs : card.backs) || []) {
@@ -3673,6 +3675,7 @@ function reachProductOf(card, variant) {
 }
 
 function reachScoreOf(card, variant) {
+  if (variant === 'overview') return Number(card.flightCount) || 0
   if (variant === 'oneway') {
     const flight = card.outs?.[0] || card.backs?.[0]
     const counted = card.outs?.length ? card.outs : (card.backs || [])
@@ -3733,6 +3736,58 @@ function onewayReachCards(records, returns) {
   })
 }
 
+function cardsFromHeatmap(payloads) {
+  const cards = []
+  for (const payload of payloads || []) {
+    const origin = payload?.origin || {}
+    const originPoint = {
+      city: origin.city,
+      iata: origin.iata,
+      airport: origin.airport,
+      lat: origin.lat,
+      lon: origin.lon,
+    }
+    for (const dest of payload?.destinations || []) {
+      const destPoint = {
+        city: dest.city,
+        iata: dest.iata,
+        airport: dest.airport,
+        lat: dest.lat,
+        lon: dest.lon,
+      }
+      const direction = dest.direction || (dest.has_outbound && dest.has_inbound ? 'both' : dest.has_inbound ? 'back' : 'out')
+      const samples = dest.samples?.length
+        ? dest.samples
+        : (dest.inbound_samples?.length
+          ? dest.inbound_samples
+          : [{ flight_no: '', dep_time: '', product: dest.kind === '666' ? '666' : '2666', dest_iata: dest.iata }])
+      const outs = samples.map((sample) => ({
+        flight_no: sample.flight_no,
+        dep_time: sample.dep_time,
+        arr_time: sample.arr_time,
+        product: sample.product || (dest.kind === '666' ? '666' : '2666'),
+        origin: originPoint,
+        dest: { ...destPoint, iata: sample.dest_iata || dest.iata },
+      }))
+      cards.push({
+        city: dest.city,
+        fromCity: origin.city,
+        trip: direction === 'both' ? 'round' : direction === 'back' ? 'back' : 'out',
+        outs,
+        backs: [],
+        kind: dest.kind,
+        hasOutbound: dest.has_outbound !== false && direction !== 'back',
+        hasInbound: !!dest.has_inbound,
+        flightCount: (dest.departures || 0) + (dest.inbound_departures || 0) || dest.flights || outs.length,
+        flightTotal: dest.flights || 0,
+        inboundFlights: dest.inbound_flights || 0,
+        byDate: dest.by_date || [],
+      })
+    }
+  }
+  return cards
+}
+
 function tripLabel(card) {
   if (card?.trip === 'round') return '往返'
   if (card?.trip === 'back') return '有回无去'
@@ -3761,6 +3816,17 @@ function tripTone(trip, dark = false) {
   const palette = MAP_THEMES[dark ? 'dark' : 'light']
   const rgb = trip === 'round' ? palette.round : trip === 'back' ? palette.back : palette.out
   return { rgb, pin: `rgb(${rgb})`, text: `rgb(${rgb})`, stroke: `rgba(${rgb}, 0.4)` }
+}
+
+/* 单程热力专用：低饱和，避免和品牌绿/橙/蓝一样抢眼 */
+const OVERVIEW_TONES = {
+  light: { round: '122, 156, 134', out: '184, 148, 108', back: '122, 148, 170', heat: '158, 170, 180' },
+  dark: { round: '146, 176, 158', out: '198, 170, 132', back: '150, 174, 194', heat: '120, 136, 148' },
+}
+
+function overviewTone(trip, dark = false) {
+  const palette = OVERVIEW_TONES[dark ? 'dark' : 'light']
+  return trip === 'round' ? palette.round : trip === 'back' ? palette.back : palette.out
 }
 
 /* 单色热度：只用主题主色的深浅表达班次多少，不和图钉、标签抢颜色 */
@@ -3815,7 +3881,7 @@ function drawHeatLayer(ctx, points, radius, opacity, rgb) {
   ctx.drawImage(layer, 0, 0)
 }
 
-function drawRouteArc(ctx, from, to, rgb, alpha, lineWidth) {
+function drawRouteArc(ctx, from, to, rgb, alpha, lineWidth, fade = 0.35) {
   const [x1, y1] = from
   const [x2, y2] = to
   const dist = Math.hypot(x2 - x1, y2 - y1)
@@ -3827,7 +3893,7 @@ function drawRouteArc(ctx, from, to, rgb, alpha, lineWidth) {
   const cx = (x1 + x2) / 2 + nx * bend * flip
   const cy = (y1 + y2) / 2 + ny * bend * flip
   const grad = ctx.createLinearGradient(x1, y1, x2, y2)
-  grad.addColorStop(0, `rgba(${rgb}, ${alpha * 0.35})`)
+  grad.addColorStop(0, `rgba(${rgb}, ${alpha * fade})`)
   grad.addColorStop(1, `rgba(${rgb}, ${alpha})`)
   ctx.beginPath()
   ctx.moveTo(x1, y1)
@@ -3841,7 +3907,7 @@ function drawRouteArc(ctx, from, to, rgb, alpha, lineWidth) {
 function visibleMapCards(cards, filter, variant, tripFilter) {
   return cards.filter((card) => {
     if (filter !== 'all' && reachKindOf(card, variant) !== filter) return false
-    if (variant === 'oneway' && tripFilter !== 'all' && card.trip !== tripFilter) return false
+    if ((variant === 'oneway' || variant === 'overview') && tripFilter !== 'all' && card.trip !== tripFilter) return false
     return true
   })
 }
@@ -3905,6 +3971,35 @@ function roundBox(ctx, x, y, w, h, r) {
   ctx.closePath()
 }
 
+function drawTierDot(ctx, x, y, r, rgb, ratio, hollow) {
+  ctx.save()
+  ctx.shadowColor = 'rgba(20, 40, 80, 0.25)'
+  ctx.shadowBlur = 3 * ratio
+  ctx.beginPath()
+  ctx.arc(x, y, r, 0, Math.PI * 2)
+  if (hollow) {
+    ctx.fillStyle = `rgba(${rgb}, 0.16)`
+    ctx.fill()
+    ctx.shadowColor = 'transparent'
+    ctx.lineWidth = 2 * ratio
+    ctx.strokeStyle = `rgb(${rgb})`
+    ctx.stroke()
+  } else {
+    ctx.fillStyle = `rgb(${rgb})`
+    ctx.fill()
+    ctx.shadowColor = 'transparent'
+    ctx.lineWidth = 1.5 * ratio
+    ctx.strokeStyle = '#fff'
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.arc(x, y, r + 3.2 * ratio, 0, Math.PI * 2)
+    ctx.lineWidth = 1.6 * ratio
+    ctx.strokeStyle = `rgba(${rgb}, 0.9)`
+    ctx.stroke()
+  }
+  ctx.restore()
+}
+
 function drawMapDot(ctx, x, y, r, color, ratio) {
   ctx.save()
   ctx.shadowColor = 'rgba(20, 40, 80, 0.25)'
@@ -3923,6 +4018,7 @@ function drawMapDot(ctx, x, y, r, color, ratio) {
 function reachCaption(card, variant, product) {
   const outN = card.outs?.length || 0
   const backN = card.backs?.length || 0
+  if (variant === 'overview') return ''
   if (variant !== 'oneway') return `${product} · 去${outN} 回${backN}`
   const timeSource = outN ? card.outs : card.backs
   const times = timeFlyLabels(timeSource, 1)[0]
@@ -3930,13 +4026,23 @@ function reachCaption(card, variant, product) {
 }
 
 /* 底图 + 热力层只随数据/尺寸/主题重建，悬停时只重绘连线、图钉与标签 */
+function mapAirport(base, point) {
+  if (!point) return null
+  const known = point.iata ? base.airports[point.iata] : null
+  if (known?.lat != null && known?.lon != null) return { ...known, city: known.city || point.city, iata: point.iata }
+  if (point.lat == null || point.lon == null) return null
+  return { iata: point.iata, city: point.city, lat: point.lat, lon: point.lon }
+}
+
 function buildReachScene({ base, cards, filter, tripFilter, variant, width, height, ratio, palette }) {
   const grouped = new Map()
   for (const card of visibleMapCards(cards, filter, variant, tripFilter)) {
     const out = card.outs[0]
     const back = card.backs[0]
-    const origin = base.airports[out?.origin?.iata || back?.dest?.iata]
-    const dest = base.airports[out?.dest?.iata || back?.origin?.iata]
+    const origin = mapAirport(base, out?.origin || (back ? { iata: back.dest?.iata, city: back.dest?.city } : null))
+      || mapAirport(base, back?.dest)
+    const dest = mapAirport(base, out?.dest || (back ? { iata: back.origin?.iata, city: back.origin?.city } : null))
+      || mapAirport(base, back?.origin)
     if (!origin || !dest) continue
     const product = reachProductOf(card, variant)
     const spot = {
@@ -3948,8 +4054,12 @@ function buildReachScene({ base, cards, filter, tripFilter, variant, width, heig
       kind: reachKindOf(card, variant),
       product,
       caption: reachCaption(card, variant, product),
-      mapCaption: variant === 'oneway' ? reachCaption(card, variant, product) : `去${card.outs?.length || 0} 回${card.backs?.length || 0}`,
-      options: (card.outs?.length || 0) + (card.backs?.length || 0),
+      mapCaption: variant === 'overview'
+        ? ''
+        : variant === 'oneway'
+          ? reachCaption(card, variant, product)
+          : `去${card.outs?.length || 0} 回${card.backs?.length || 0}`,
+      options: Number(card.flightCount) || ((card.outs?.length || 0) + (card.backs?.length || 0)),
     }
     const cityKey = card.city || dest.city || dest.iata
     const prev = grouped.get(cityKey)
@@ -3994,11 +4104,65 @@ function buildReachScene({ base, cards, filter, tripFilter, variant, width, heig
   const maxOptions = Math.max(1, ...spots.map((spot) => spot.options))
   for (const spot of spots) spot.level = spot.options / maxOptions
   const radius = Math.max(30 * ratio, Math.min(width, height) * 0.075)
+  const softHeat = variant === 'overview'
+  const heatRgb = softHeat ? (palette.land === '#FFFFFF' ? OVERVIEW_TONES.light.heat : OVERVIEW_TONES.dark.heat) : palette.heat
   drawHeatLayer(ctx, spots.map((spot) => {
     const [x, y] = project(spot.dest.lon, spot.dest.lat)
     return { x, y, weight: 0.3 + 0.7 * spot.level, spread: 0.75 + 0.45 * spot.level }
-  }), radius, palette.heatOpacity, palette.heat)
+  }), radius, softHeat ? 0.18 : palette.heatOpacity, heatRgb)
   return { spots, project, layer }
+}
+
+const MAP_VIEW_HOME = { zoom: 1, x: 0, y: 0 }
+const MAP_ZOOM_MIN = 1
+const MAP_ZOOM_MAX = 8
+
+/* 视野以适配全国的画面为 1 倍。滚轮和按钮改 zoom，拖拽改平移，并保证地图不会被拖出画布。 */
+function clampMapView(view, width, height) {
+  const zoom = Math.min(MAP_ZOOM_MAX, Math.max(MAP_ZOOM_MIN, Number(view?.zoom) || 1))
+  const x = Number(view?.x) || 0
+  const y = Number(view?.y) || 0
+  if (!width || !height) return { zoom, x, y }
+  const cx = width / 2
+  const cy = height / 2
+  const minX = 72 - cx * (1 - zoom) - width * zoom
+  const maxX = width - 72 - cx * (1 - zoom)
+  const minY = 72 - cy * (1 - zoom) - height * zoom
+  const maxY = height - 72 - cy * (1 - zoom)
+  return {
+    zoom,
+    x: Math.min(maxX, Math.max(minX, x)),
+    y: Math.min(maxY, Math.max(minY, y)),
+  }
+}
+
+/* 以鼠标所在点为中心缩放，让该点下的城市留在原地 */
+function zoomMapAt(view, mx, my, factor, width, height) {
+  const current = clampMapView(view, width, height)
+  const nextZoom = Math.min(MAP_ZOOM_MAX, Math.max(MAP_ZOOM_MIN, current.zoom * factor))
+  const cx = width / 2
+  const cy = height / 2
+  const relX = (mx - cx - current.x) / current.zoom
+  const relY = (my - cy - current.y) / current.zoom
+  return clampMapView({
+    zoom: nextZoom,
+    x: mx - cx - relX * nextZoom,
+    y: my - cy - relY * nextZoom,
+  }, width, height)
+}
+
+/* 底图按 1 倍缓存；连线、圆点和标签用这个投影画到当前视野，放大后字号不变、能露出更多城市名 */
+function applyMapView(project, view, width, height, ratio) {
+  const zoom = view?.zoom || 1
+  const panX = (view?.x || 0) * ratio
+  const panY = (view?.y || 0) * ratio
+  if (zoom === 1 && !panX && !panY) return project
+  const cx = width / 2
+  const cy = height / 2
+  return (lon, lat) => {
+    const [bx, by] = project(lon, lat)
+    return [(bx - cx) * zoom + cx + panX, (by - cy) * zoom + cy + panY]
+  }
 }
 
 function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend', onPick }) {
@@ -4011,7 +4175,11 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
   const [activeKey, setActiveKey] = useState('')
   const [tip, setTip] = useState(null)
   const [dark, setDark] = useState(() => document.documentElement.dataset.theme === 'dark')
+  const [view, setView] = useState(MAP_VIEW_HOME)
   const sceneRef = useRef(null)
+  const drawRef = useRef(() => {})
+  const viewRef = useRef(MAP_VIEW_HOME)
+  const dragRef = useRef(null)
 
   useEffect(() => {
     let alive = true
@@ -4022,6 +4190,8 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
   }, [])
 
   useEffect(() => {
+    viewRef.current = MAP_VIEW_HOME
+    setView(MAP_VIEW_HOME)
     setHoverKey('')
     setActiveKey('')
     setTip(null)
@@ -4060,19 +4230,40 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
         scene = { ...buildReachScene({ base, cards, filter, tripFilter, variant, width: W, height: H, ratio, palette }), key: sceneKey, cards, base }
         sceneRef.current = scene
       }
-      const { spots, project } = scene
+      const { spots } = scene
+      const mapView = viewRef.current
+      const project = applyMapView(scene.project, mapView, W, H, ratio)
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
       ctx.clearRect(0, 0, W, H)
+      const panX = (mapView.x || 0) * ratio
+      const panY = (mapView.y || 0) * ratio
+      const zoom = mapView.zoom || 1
+      ctx.setTransform(zoom, 0, 0, zoom, (W / 2) * (1 - zoom) + panX, (H / 2) * (1 - zoom) + panY)
       ctx.drawImage(scene.layer, 0, 0)
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
 
       const focusKey = hoverKey || activeKey
-      const rgbOf = (spot) => (variant === 'oneway'
-        ? tripTone(spot.card.trip, dark).rgb
-        : (spot.kind === '666' ? palette.pin666 : palette.pin2666))
+      const rgbOf = (spot) => (variant === 'overview'
+        ? overviewTone(spot.card.trip, dark)
+        : (variant === 'oneway'
+          ? tripTone(spot.card.trip, dark).rgb
+          : (spot.kind === '666' ? palette.pin666 : palette.pin2666)))
       const arcOrder = [...spots].sort((a, b) => (a.key === focusKey) - (b.key === focusKey))
       for (const spot of arcOrder) {
         const on = spot.key === focusKey
-        const alpha = on ? 0.9 : (focusKey ? 0.06 : 0.16)
-        drawRouteArc(ctx, project(spot.origin.lon, spot.origin.lat), project(spot.dest.lon, spot.dest.lat), on ? rgbOf(spot) : palette.heat, alpha, (on ? 2 : 1) * ratio)
+        const overview = variant === 'overview'
+        const alpha = on ? 0.88 : (focusKey ? (overview ? 0.24 : 0.06) : (overview ? 0.58 : 0.16))
+        const arcRgb = overview || on ? rgbOf(spot) : palette.heat
+        const width = (on ? (overview ? 3.4 : 2) : (overview ? 2.6 : 1)) * ratio
+        drawRouteArc(
+          ctx,
+          project(spot.origin.lon, spot.origin.lat),
+          project(spot.dest.lon, spot.dest.lat),
+          arcRgb,
+          alpha,
+          width,
+          overview ? 0.72 : 0.35,
+        )
       }
 
       const origins = new Map()
@@ -4120,7 +4311,9 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
           ctx.arc(x, y, dotR(spot) + 7 * ratio, 0, Math.PI * 2)
           ctx.fill()
         }
-        drawMapDot(ctx, x, y, dotR(spot) + (hot ? 1.5 * ratio : 0), `rgb(${rgbOf(spot)})`, ratio)
+        const dotRadius = dotR(spot) + (hot ? 1.5 * ratio : 0)
+        if (variant === 'overview') drawTierDot(ctx, x, y, dotRadius, rgbOf(spot), ratio, spot.kind !== '666')
+        else drawMapDot(ctx, x, y, dotRadius, `rgb(${rgbOf(spot)})`, ratio)
       }
 
       const placed = [
@@ -4199,15 +4392,43 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
           ctx.fillStyle = palette.muted
           ctx.fillText(caption, box.x + 8 * ratio + cityW + gap, baseY)
         }
-        layout.push({ ...spot, hitX: x / ratio, hitY: y / ratio, tipX: box.x / ratio, tipY: box.y / ratio })
+        layout.push({
+          ...spot,
+          hitX: x / ratio,
+          hitY: y / ratio,
+          tipX: box.x / ratio,
+          tipY: box.y / ratio,
+          label: { x: box.x / ratio, y: box.y / ratio, w: box.w / ratio, h: box.h / ratio },
+        })
       }
       layoutRef.current = layout
     }
+    drawRef.current = draw
     draw()
-    const observer = new ResizeObserver(draw)
+    const observer = new ResizeObserver(() => drawRef.current())
     observer.observe(stage)
     return () => observer.disconnect()
   }, [base, cards, filter, tripFilter, hoverKey, activeKey, variant, dark])
+
+  useEffect(() => {
+    viewRef.current = view
+    drawRef.current()
+  }, [view])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return undefined
+    const onWheel = (event) => {
+      event.preventDefault()
+      const rect = canvas.getBoundingClientRect()
+      const factor = event.deltaY > 0 ? 1 / 1.18 : 1.18
+      const next = zoomMapAt(viewRef.current, event.clientX - rect.left, event.clientY - rect.top, factor, rect.width, rect.height)
+      viewRef.current = next
+      setView(next)
+    }
+    canvas.addEventListener('wheel', onWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', onWheel)
+  }, [mapErr])
 
   const pickSpot = (event) => {
     const canvas = canvasRef.current
@@ -4215,8 +4436,12 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
     const rect = canvas.getBoundingClientRect()
     const x = event.clientX - rect.left
     const y = event.clientY - rect.top
+    for (const spot of layoutRef.current) {
+      const label = spot.label
+      if (label && x >= label.x && y >= label.y && x <= label.x + label.w && y <= label.y + label.h) return spot
+    }
     let best = null
-    let bestD = 16
+    let bestD = 18
     for (const spot of layoutRef.current) {
       const dist = Math.hypot(x - spot.hitX, y - spot.hitY)
       if (dist < bestD) {
@@ -4236,9 +4461,24 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
     const out = spot.card.outs[0]
     const back = variant === 'oneway' ? spot.card.backs?.[0] : spot.card.backs[0]
     const timed = [...(spot.card.outs?.length ? spot.card.outs : spot.card.backs || [])].sort((a, b) => String(a.dep_time || '').localeCompare(String(b.dep_time || '')))
-    const outLines = variant === 'oneway'
+    const dateRows = variant === 'overview' ? (spot.card.byDate || []) : []
+    const outLines = variant === 'overview'
+      ? dateRows.slice(0, 4).map((row) => {
+        const md = String(row.date || '').slice(5).replace('-', '/')
+        const bits = [`${row.flights}班`]
+        if (row['666']) bits.push(`666 ${row['666']}`)
+        if (row['2666']) bits.push(`2666 ${row['2666']}`)
+        return `${md} ${bits.join(' · ')}`
+      })
+      : variant === 'oneway'
       ? timed.slice(0, 4).map((flight) => `${spot.card.trip === 'back' ? '回程 ' : ''}${timeFlyLabel(flight.dep_time) || flight.dep_time || '--:--'}${flight.arr_time ? ` → ${flight.arr_time}` : ''}`)
       : (out ? [`${out.flight_no}  ${out.dep_time || '--:--'}`] : [])
+    if (variant === 'overview' && dateRows.length > 4) outLines.push(`另有 ${dateRows.length - 4} 天有班`)
+    if (variant === 'overview' && !dateRows.length) {
+      for (const flight of (spot.card.outs || []).filter((item) => item.flight_no).slice(0, 3)) {
+        outLines.push(`回程 ${flight.flight_no}${flight.dep_time ? `  ${flight.dep_time}` : ''}`)
+      }
+    }
     if (variant === 'oneway') {
       const rest = timeFlyLabels(timed.slice(4), 3)
       if (rest.length) outLines.push(rest.join(' / '))
@@ -4263,15 +4503,31 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
 
   const shown = visibleMapCards(cards, filter, variant, tripFilter)
   const originNames = [...new Set(shown.map((card) => card.fromCity).filter(Boolean))]
+  const zoomBy = (factor) => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const rect = canvas.getBoundingClientRect()
+    const next = zoomMapAt(viewRef.current, rect.width / 2, rect.height / 2, factor, rect.width, rect.height)
+    viewRef.current = next
+    setView(next)
+  }
   return (
     <div className="weekend-map">
       <div className="weekend-map-head">
         <div>
           <b>当前出发地：{originNames.join('、') || '未选'}</b>
-          <span>（{new Set(shown.map((card) => card.city)).size} 个可达城市 · 点城市{variant === 'oneway' ? '筛选列表' : '查看方案'}）</span>
+          <span>（{new Set(shown.map((card) => card.city)).size} 个可达城市 · 点城市{variant === 'overview' ? '查看航班' : variant === 'oneway' ? '筛选列表' : '查看方案'} · 滚轮缩放，拖拽平移）</span>
         </div>
         <div className="weekend-map-legend">
-          {variant === 'oneway' ? (
+          {variant === 'overview' ? (
+            <>
+              <span><i className="map-dot is-soft-round" />绿 有去有回</span>
+              <span><i className="map-dot is-soft-out" />橙 只有去</span>
+              <span><i className="map-dot is-soft-back" />蓝 只有回</span>
+              <span><i className="map-dot is-soft-solid" />实心 666</span>
+              <span><i className="map-dot is-soft-hollow" />空心 2666</span>
+            </>
+          ) : variant === 'oneway' ? (
             <>
               <span><i className="map-dot is-round" />往返</span>
               <span><i className="map-dot is-out" />有去无回</span>
@@ -4283,35 +4539,83 @@ function WeekendReachMap({ cards, filter, tripFilter = 'all', variant = 'weekend
               <span><i className="map-dot is-muted" />2666 专享</span>
             </>
           )}
-          <span className="map-heat-legend" title="热度按该城市可选的去程 + 回程班次数计算">
+          <span className="map-heat-legend" title={variant === 'overview' ? '热度按所选日期内的去程和回程班次' : '热度按该城市可选的去程 + 回程班次数计算'}>
             可选班次 少<i aria-hidden="true" />多
           </span>
         </div>
       </div>
       {mapErr ? <Alert type="error" showIcon message={mapErr} /> : (
         <div className="weekend-map-stage" ref={stageRef}>
+          <div className="map-zoom" role="group" aria-label="滚轮缩放，拖拽平移">
+            <button type="button" aria-label="放大" onClick={() => zoomBy(1.3)}>＋</button>
+            <button type="button" aria-label="缩小" onClick={() => zoomBy(1 / 1.3)}>－</button>
+            <button type="button" aria-label="回到全图" onClick={() => { viewRef.current = MAP_VIEW_HOME; setView(MAP_VIEW_HOME) }}>复位</button>
+            <span className="map-zoom-level">{Math.round(view.zoom * 100)}%</span>
+          </div>
           <canvas
             ref={canvasRef}
-            onMouseMove={(event) => {
+            onPointerDown={(event) => {
+              if (event.button != null && event.button !== 0) return
+              dragRef.current = {
+                id: event.pointerId,
+                x: event.clientX,
+                y: event.clientY,
+                view: viewRef.current,
+                moved: false,
+              }
+              event.currentTarget.setPointerCapture(event.pointerId)
+            }}
+            onPointerMove={(event) => {
+              const drag = dragRef.current
+              if (drag && drag.id === event.pointerId) {
+                const dx = event.clientX - drag.x
+                const dy = event.clientY - drag.y
+                if (!drag.moved && Math.hypot(dx, dy) < 5) return
+                drag.moved = true
+                event.currentTarget.classList.add('is-grabbing')
+                const rect = event.currentTarget.getBoundingClientRect()
+                const next = clampMapView({
+                  zoom: drag.view.zoom,
+                  x: drag.view.x + dx,
+                  y: drag.view.y + dy,
+                }, rect.width, rect.height)
+                viewRef.current = next
+                setView(next)
+                return
+              }
               const spot = pickSpot(event)
               if ((spot?.key || '') === hoverKey) return
               showTip(spot)
             }}
-            onMouseLeave={() => showTip(null)}
-            onClick={(event) => {
+            onPointerUp={(event) => {
+              const drag = dragRef.current
+              event.currentTarget.classList.remove('is-grabbing')
+              if (!drag || drag.id !== event.pointerId) return
+              dragRef.current = null
+              if (drag.moved) {
+                showTip(null)
+                return
+              }
               const spot = pickSpot(event)
               if (!spot) return
               setActiveKey(spot.key)
               showTip(spot)
               if (onPick) onPick(spot.card)
             }}
+            onPointerCancel={() => {
+              dragRef.current = null
+              canvasRef.current?.classList.remove('is-grabbing')
+            }}
+            onPointerLeave={() => {
+              if (!dragRef.current) showTip(null)
+            }}
           />
           {tip && (
             <div className="weekend-map-tip" style={{ left: tip.x, top: tip.y }}>
               <b>{tip.city}</b>
-              <span>{variant === 'oneway' ? `从${tip.from}出发 · ${tip.tripText}` : `从${tip.from}出发 · 可选 ${tip.caption.split(' · ')[1] || ''}`}</span>
-              <span className={tip.product === '2666' ? 'is-muted' : ''}>{tip.product}</span>
-              {(tip.outLines || []).map((line) => <span key={line}>{variant === 'oneway' ? line : `去程 ${line}`}</span>)}
+              <span>{variant === 'overview' ? `从${tip.from}出发` : variant === 'oneway' ? `从${tip.from}出发 · ${tip.tripText}` : `从${tip.from}出发 · 可选 ${tip.caption.split(' · ')[1] || ''}`}</span>
+              <span className={String(tip.product).startsWith('2666') ? 'is-muted' : ''}>{tip.product}</span>
+              {(tip.outLines || []).map((line) => <span key={line}>{variant === 'weekend' ? `去程 ${line}` : line}</span>)}
               {tip.backText ? <span>返程 {tip.backText}</span> : null}
             </div>
           )}
@@ -4523,10 +4827,13 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
   const [weekendMeta, setWeekendMeta] = useState(null)
   const [watchCityKey, setWatchCityKey] = useState('')
   const [reachFilter, setReachFilter] = useState('all')
+  const [heatDir, setHeatDir] = useState('all')
   const [originOpen, setOriginOpen] = useState(false)
   const [weekendView, setWeekendView] = useState('list')
-  const [onewayView, setOnewayView] = useState('list')
   const [onewayCity, setOnewayCity] = useState('')
+  const [onewayHeat, setOnewayHeat] = useState(null)
+  const [onewayHeatLoading, setOnewayHeatLoading] = useState(false)
+  const [onewayHeatErr, setOnewayHeatErr] = useState('')
   const [onewayTrip, setOnewayTrip] = useState('all')
   const [originRecent, setOriginRecent] = useState(loadOriginRecent)
   const originDefaulted = useRef(false)
@@ -4637,6 +4944,59 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watch, routeOrigins])
+
+  const heatKey = [
+    queryKind,
+    routeOrigins.map(cityNameOf).join('|'),
+    watch?.product || '',
+    watch?.dateMode || '',
+    watch?.dateMode === 'single' && watch?.date ? watch.date.format('YYYY-MM-DD') : '',
+    watch?.dateMode === 'range' && watch?.dateRange?.length === 2 ? watch.dateRange[0].format('YYYY-MM-DD') : '',
+    watch?.dateMode === 'range' && watch?.dateRange?.length === 2 ? watch.dateRange[1].format('YYYY-MM-DD') : '',
+  ].join('~')
+  useEffect(() => {
+    if (queryKind !== 'oneway') return undefined
+    const origins = routeOrigins.slice(0, WEEKEND_ORIGIN_LIMIT)
+    if (!origins.length) {
+      setOnewayHeat(null)
+      return undefined
+    }
+    const product = !watch || watch.product === 'all' ? '' : (watch.product || '')
+    let date = ''
+    let date_start = ''
+    let date_end = ''
+    if (watch?.dateMode === 'single' && watch.date) date = watch.date.format('YYYY-MM-DD')
+    else if (watch?.dateMode === 'range' && watch.dateRange && watch.dateRange.length === 2) {
+      date_start = watch.dateRange[0].format('YYYY-MM-DD')
+      date_end = watch.dateRange[1].format('YYYY-MM-DD')
+    }
+    let alive = true
+    const timer = setTimeout(() => {
+      setOnewayHeatLoading(true)
+      Promise.all(origins.map((label) => api.flightHeatmap({
+        from: cityNameOf(label),
+        product,
+        date,
+        date_start,
+        date_end,
+      }))).then((list) => {
+        if (!alive) return
+        setOnewayHeat(list)
+        setOnewayHeatErr('')
+      }).catch((err) => {
+        if (!alive) return
+        setOnewayHeatErr(err.message || '目的地热力图没有加载出来')
+      }).finally(() => {
+        if (alive) setOnewayHeatLoading(false)
+      })
+    }, 250)
+    return () => {
+      alive = false
+      clearTimeout(timer)
+    }
+    // heatKey 已覆盖出发地、日期和档位；watch / routeOrigins 只在回调里读当前值
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [heatKey])
 
   const optProps = (list) => ({
     showSearch: true,
@@ -4936,7 +5296,6 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
           date: dayjs(req.date),
         }
     setQueryKind(round ? 'round' : 'oneway')
-    setOnewayView('list')
     setRouteOrigins([req.from])
     routeOriginDefaulted.current = true
     form.setFieldsValue(values)
@@ -4948,6 +5307,10 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
   const onewayCards = useMemo(
     () => (queryKind === 'oneway' && result && !result.round ? onewayReachCards(result.records, result.returns) : []),
     [queryKind, result],
+  )
+  const heatCards = useMemo(
+    () => (queryKind === 'oneway' ? cardsFromHeatmap(onewayHeat) : []),
+    [queryKind, onewayHeat],
   )
   const onewayCardByPair = useMemo(
     () => new Map(onewayCards.map((card) => [`${card.fromCity}|${card.city}`, card])),
@@ -5798,6 +6161,84 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
           </Row>
         </Form>
         {errMsg && <Alert style={{ marginTop: 8 }} type="error" showIcon message={errMsg} />}
+        {queryKind === 'oneway' && (onewayHeat || onewayHeatLoading || onewayHeatErr) && (() => {
+          const heatMeta = onewayHeat?.[0]
+          const heatFroms = [...new Set((onewayHeat || []).map((item) => item.origin?.city).filter(Boolean))].join('、')
+          const heatSpan = !heatMeta ? '' : heatMeta.unbounded
+            ? `未来 ${heatMeta.span_days} 天（${heatMeta.date_start} – ${heatMeta.date_end}）`
+            : heatMeta.date_start === heatMeta.date_end
+              ? heatMeta.date_start
+              : `${heatMeta.date_start} – ${heatMeta.date_end}${heatMeta.truncated ? '（区间较长，只显示前 92 天）' : ''}`
+          const heat666 = heatCards.filter((card) => card.kind === '666').length
+          const heat2666 = heatCards.filter((card) => card.kind === '2666').length
+          const heatBoth = heatCards.filter((card) => card.trip === 'round').length
+          const heatOut = heatCards.filter((card) => card.trip === 'out').length
+          const heatBack = heatCards.filter((card) => card.trip === 'back').length
+          return (
+            <div style={{ marginTop: 16 }}>
+              <div className="weekend-summary">
+                <div>
+                  <div className="weekend-summary-title">{heatFroms || '所选城市'} 出发 · 可以去这些地方</div>
+                  <div className="weekend-summary-sub">
+                    {heatSpan}
+                    {heatCards.length ? <> · <b>{heatCards.length}</b> 个城市 · 有去有回 <b>{heatBoth}</b> · 只有去 <b>{heatOut}</b> · 只有回 <b>{heatBack}</b></> : ''}
+                  </div>
+                </div>
+                <span className="weekend-summary-note">绿是有去有回，橙是只有去，蓝是只有回。实心 666，空心 2666。</span>
+              </div>
+              {onewayHeatErr ? <Alert style={{ marginBottom: 12 }} type="error" showIcon message={onewayHeatErr} /> : null}
+              {heatCards.length > 0 && (
+                <div className="date-quick" style={{ marginBottom: 10 }}>
+                  {[
+                    { key: 'all', label: `全部方向（${heatCards.length}）` },
+                    { key: 'round', label: `有去有回（${heatBoth}）` },
+                    { key: 'out', label: `只有去（${heatOut}）` },
+                    { key: 'back', label: `只有回（${heatBack}）` },
+                  ].map((item) => (
+                    <Button
+                      key={item.key}
+                      size="small"
+                      type={heatDir === item.key ? 'primary' : 'default'}
+                      onClick={() => setHeatDir(item.key)}
+                    >
+                      {item.label}
+                    </Button>
+                  ))}
+                  {[
+                    { key: 'all', label: `全部档位（${heatCards.length}）` },
+                    { key: '666', label: `666 可用（${heat666}）` },
+                    { key: '2666', label: `2666 专享（${heat2666}）` },
+                  ].map((item) => (
+                    <Button
+                      key={`tier-${item.key}`}
+                      size="small"
+                      type={reachFilter === item.key ? 'primary' : 'default'}
+                      onClick={() => setReachFilter(item.key)}
+                    >
+                      {item.label}
+                    </Button>
+                  ))}
+                </div>
+              )}
+              {onewayHeatLoading && !heatCards.length ? <Spin /> : null}
+              {!onewayHeatLoading && !onewayHeatErr && !heatCards.length ? (
+                <Empty description="这段日期没有可兑的目的地" />
+              ) : heatCards.length > 0 ? (
+                <WeekendReachMap
+                  cards={heatCards}
+                  filter={reachFilter}
+                  tripFilter={heatDir}
+                  variant="overview"
+                  onPick={(card) => {
+                    const label = matchOriginLabel(linkOpts.to, card.city) || card.city
+                    form.setFieldsValue({ to: label })
+                    submit({ ...form.getFieldsValue(), to: label })
+                  }}
+                />
+              ) : null}
+            </div>
+          )
+        })()}
         {queryKind === 'weekend' && weekendCards && (
           <div style={{ marginTop: 16 }}>
             <div className="weekend-summary">
@@ -5934,17 +6375,6 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
           )}
           {queryKind === 'oneway' && !result.round && onewayCards.length > 0 && (
             <>
-              {onewayMulti && <div className="weekend-view-switch">
-                <button type="button" className={onewayView === 'list' ? 'is-on' : ''} onClick={() => setOnewayView('list')}>
-                  <TasksIcon size={16} />
-                  航线排期列表
-                </button>
-                <button type="button" className={onewayView === 'map' ? 'is-on' : ''} onClick={() => setOnewayView('map')}>
-                  <MapIcon size={16} />
-                  全国可去地图
-                  <span className="weekend-heat-badge">热力视效</span>
-                </button>
-              </div>}
               {(() => {
                 const cities = new Set(onewayCards.map((card) => card.city))
                 const tierCities = (kind) => new Set(onewayCards.filter((card) => reachKindOf(card, 'oneway') === kind).map((card) => card.city)).size
@@ -5999,21 +6429,8 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
                   <Tag closable onClose={() => setOnewayCity('')} style={{ marginInlineEnd: 0 }}>只看 {onewayCity}</Tag>
                 ) : null}
               </div>
-              {onewayView === 'map' && onewayMulti ? (
-                <WeekendReachMap
-                  cards={onewayCards}
-                  filter={reachFilter}
-                  tripFilter={onewayTrip}
-                  variant="oneway"
-                  onPick={(card) => {
-                    setOnewayCity(card.city)
-                    if (card.trip !== 'back') setOnewayView('list')
-                  }}
-                />
-              ) : null}
             </>
           )}
-          {(queryKind !== 'oneway' || result.round || onewayView !== 'map' || !onewayMulti) && (
           <Table
             rowKey="key"
             size="small"
@@ -6024,7 +6441,6 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
             rowSelection={{ selectedRowKeys: selKeys, onChange: setSelKeys }}
             locale={{ emptyText: <Empty description="没有符合条件的航班，换个条件试试" /> }}
           />
-          )}
         </Card>
       )}
 

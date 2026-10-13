@@ -67,6 +67,12 @@ export const api = {
     ).toString()
     return request(`/api/flights/query?${qs}`)
   },
+  flightHeatmap: (params) => {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ''),
+    ).toString()
+    return request(`/api/flights/heatmap?${qs}`)
+  },
   flightPrices: (params) => {
     const qs = new URLSearchParams(
       Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ''),
