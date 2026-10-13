@@ -3004,8 +3004,9 @@ function OriginPickerModal({ open, options, value, recent, onCancel, onConfirm, 
 
   const full = draft.length >= WEEKEND_ORIGIN_LIMIT
   const q = query.trim().toUpperCase()
+  const allLabels = options || []
   const searched = q
-    ? (options || []).filter((label) => String(label).toUpperCase().includes(q)).slice(0, 24)
+    ? allLabels.filter((label) => String(label).toUpperCase().includes(q))
     : []
   const hot = groupOriginLabels(options, HOT_ORIGIN_CITIES)
   const recentLabels = []
@@ -3080,7 +3081,10 @@ function OriginPickerModal({ open, options, value, recent, onCancel, onConfirm, 
           </div>
         </>
       )}
-      <div className="origin-section-title">{q ? '搜索结果' : '热门城市'}</div>
+      <div className="origin-section-title">
+        {q ? '搜索结果' : '热门城市'}
+        {q ? <span>{searched.length} 个</span> : null}
+      </div>
       {(q ? searched : hot).length === 0 ? (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={q ? '没有匹配的城市' : '当前没有可选城市'} />
       ) : (
@@ -3095,6 +3099,26 @@ function OriginPickerModal({ open, options, value, recent, onCancel, onConfirm, 
             />
           ))}
         </div>
+      )}
+      {!q && (
+        <>
+          <div className="origin-section-title">全部出发地 <span>{allLabels.length} 个</span></div>
+          {allLabels.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有可选城市" />
+          ) : (
+            <div className="origin-chips origin-all">
+              {allLabels.map((label) => (
+                <OriginChip
+                  key={label}
+                  label={label}
+                  on={draft.includes(label)}
+                  disabled={full}
+                  onClick={() => setDraft((prev) => toggleOriginLabel(prev, label))}
+                />
+              ))}
+            </div>
+          )}
+        </>
       )}
       <div className="origin-foot">
         <div className="origin-picked">
@@ -6068,7 +6092,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
             )}
             <OriginPickerModal
               open={routeOriginOpen}
-              options={linkOpts.from}
+              options={allOrigins}
               value={routeOrigins}
               recent={originRecent.length ? originRecent : recent.map((item) => item.from).filter(Boolean)}
               onCancel={() => setRouteOriginOpen(false)}

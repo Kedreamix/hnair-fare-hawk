@@ -498,6 +498,7 @@ html[data-theme="dark"] .map-dot.is-soft-hollow { background: color-mix(in srgb,
 .origin-section-title span, .origin-clear { color: var(--color-muted); font-size: 12px; font-weight: 400; }
 .origin-clear { border: 0; background: transparent; cursor: pointer; padding: 0; }
 .origin-groups, .origin-chips, .origin-picked { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.origin-all { max-height: 240px; overflow: auto; padding-right: 4px; }
 .origin-group, .origin-chip, .origin-picked-tag { border: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-ink); border-radius: 999px; cursor: pointer; }
 .origin-group { display: inline-flex; align-items: center; gap: 4px; padding: 6px 12px 6px 6px; }
 .origin-group-ico { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--color-raised); }
