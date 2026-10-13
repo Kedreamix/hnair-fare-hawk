@@ -287,15 +287,25 @@ body {
 .task-group-actions { margin-left: auto; }
 .task-date { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 10px 14px 0; border-top: 1px solid var(--color-border); color: var(--color-muted); font-size: 12px; }
 .task-date-label { display: flex; align-items: baseline; gap: 8px; }
-.task-ops-ghost { display: inline-flex; gap: 8px; visibility: hidden; }
-.task-ops-span { position: relative; display: inline-flex; }
-.task-ops-span > .ant-btn { position: absolute; inset: 0; width: 100%; height: 100%; }
 .task-group-head + div > .task-date { border-top: 0; }
 .task-date b { color: var(--color-text); font-size: 13px; }
 .task-flight { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 10px 14px; border-top: 1px dashed var(--color-border); }
 .task-flight.is-paused { background: var(--surface-2); }
 .task-date + .task-flight { border-top: 0; }
-.task-flight-main, .task-flight-ops { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.task-flight-main { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.task-flight-ops {
+  display: grid;
+  grid-template-columns: 200px 76px 32px 32px;
+  align-items: center;
+  column-gap: 6px;
+  margin-left: auto;
+  flex: none;
+}
+.task-ops-links { display: flex; justify-content: flex-end; align-items: center; min-width: 0; }
+.task-ops-link.ant-btn { height: 24px; padding-inline: 4px; }
+.task-ops-power.ant-btn { width: 76px; justify-content: center; padding-inline: 8px; }
+.task-ops-icon { display: flex; justify-content: center; }
+.task-ops-icon .ant-btn { width: 32px; padding-inline: 0; }
 .task-flight-line, .task-flight-meta { display: contents; }
 .task-flight-no { font-weight: 700; }
 .task-jump.ant-btn { height: auto; padding: 0; }
@@ -597,15 +607,12 @@ html[data-theme="dark"] .map-dot.is-soft-hollow { background: color-mix(in srgb,
   .task-group-head b { font-size: 15px; line-height: 1.35; }
   .task-date { flex-direction: column; align-items: stretch; gap: 8px; padding-bottom: 8px; }
   .task-date-label { flex-wrap: wrap; }
-  .task-ops-ghost { display: none; }
-  .task-ops-span { display: inline-flex; }
-  .task-ops-span > .ant-btn { position: static; width: auto; height: auto; }
   .task-flight { flex-direction: column; align-items: stretch; gap: 8px; }
   .task-flight-main { flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; }
   .task-flight-line, .task-flight-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-  .task-date .task-flight-ops, .task-flight-ops { width: 100%; gap: 4px; }
-  .task-flight > .task-flight-ops { flex-wrap: nowrap; }
-  .task-flight > .task-flight-ops .ant-btn { padding-inline: 7px; }
+  .task-flight-ops { display: flex; flex-wrap: wrap; width: 100%; margin-left: 0; column-gap: 4px; row-gap: 6px; }
+  .task-ops-links { flex: 1 1 100%; justify-content: flex-start; }
+  .task-ops-power.ant-btn { width: auto; min-width: 72px; }
   .app-header.ant-layout-header { height: 58px; padding: 0 10px; }
   .command-bar { gap: 6px; }
   .brand-mode, .theme-toggle { display: none; }

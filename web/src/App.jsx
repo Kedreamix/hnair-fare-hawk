@@ -232,7 +232,7 @@ function Overview({ data, onGo, onToggleStatus, onChanged, msg, onOpenDetail }) 
   const cfg = data.config
   const stats = data.stats
   const running = cfg.status === 'running'
-  const hits = (data.history || []).filter((r) => Number(r.price) <= 500).slice(0, 50)
+  const hits = [...(data.history || [])].reverse().filter((r) => Number(r.price) <= 500).slice(0, 50)
 
   const taskOf = (r) => (data.tasks || []).find((t) => Array.isArray(t.ids) && t.ids.includes(r.task_id))
 
@@ -585,13 +585,14 @@ function monitorDayLabel(iso) {
   return week ? `${md} ${week}` : md
 }
 
-function monitorDateGroups(legs) {
+function monitorDateGroups(legs, round) {
   const days = [...new Set((legs || []).flatMap((leg) => leg.dates || []))].filter(Boolean).sort()
   const clusters = []
   days.forEach((day) => {
     const last = clusters[clusters.length - 1]
     const gap = last ? dayjs(day).startOf('day').diff(dayjs(last[last.length - 1]).startOf('day'), 'day') : 99
-    if (!last || gap > 4) clusters.push([day])
+    // 单程每个出发日单独列。相邻两天不是一趟住宿，不合成「2天1晚」。
+    if (!round || !last || gap > 4) clusters.push([day])
     else last.push(day)
   })
   const groups = clusters.map((dates) => {
@@ -603,7 +604,7 @@ function monitorDateGroups(legs) {
     return {
       key: dates[0],
       label: span,
-      stay: nights > 0 ? `${nights + 1}天${nights}晚` : '',
+      stay: round && nights > 0 ? `${nights + 1}天${nights}晚` : '',
       legs: (legs || []).filter((leg) => (leg.dates || []).some((day) => set.has(day))).map((leg) => ({
         task: leg,
         dates: (leg.dates || []).filter((day) => set.has(day)),
@@ -668,6 +669,23 @@ function roundDetailRequest(group) {
     backFlight: best.back.flight_no || '',
     date: best.outDay,
   }
+}
+
+function listsMatch(rows, pick) {
+  if (!rows.length) return { same: true, value: undefined }
+  const key = (value) => JSON.stringify(value ?? null)
+  const first = pick(rows[0])
+  return { same: rows.every((row) => key(pick(row)) === key(first)), value: first }
+}
+
+function TaskPowerButton({ on, title, onClick }) {
+  return (
+    <Tooltip title={title}>
+      <Button size="small" className="task-ops-power" type={on ? 'primary' : 'default'} icon={<PowerIcon />} onClick={onClick}>
+        {on ? '停止' : '启动'}
+      </Button>
+    </Tooltip>
+  )
 }
 
 function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
@@ -916,6 +934,51 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
   // 档位条件（多选白名单，空=不限）：编辑弹窗日期池随其联动（档位×日期规则，如 666 节假日不可用）
   const editTiers = Form.useWatch('tiers', editForm)
   const editMailScope = Form.useWatch('mail_scope', editForm)
+  const [routeEdit, setRouteEdit] = useState(null)
+  const [routeBusy, setRouteBusy] = useState(false)
+  const [routeForm] = Form.useForm()
+  const routeUnifyMail = Form.useWatch('unify_mail', routeForm)
+
+  const openRouteEdit = (row) => {
+    const legs = row.legs || []
+    const tiers = listsMatch(legs, (t) => t.tiers || [])
+    const seats = listsMatch(legs, (t) => Number(t.min_seats || 1))
+    const cabins = listsMatch(legs, (t) => t.cabins || [])
+    const mail = listsMatch(legs, (t) => String(t.notify_email || '').trim())
+    const dayMail = legs.some((t) => Object.values(t.notify_email_by_date || {}).some((addr) => String(addr || '').trim()))
+    setRouteEdit({ row, dayMail, mixed: !tiers.same || !seats.same || !cabins.same || !mail.same })
+    routeForm.setFieldsValue({
+      tiers: tiers.same ? tiers.value : [],
+      min_seats: seats.same ? seats.value : 1,
+      cabins: cabins.same ? cabins.value : [],
+      notify_email: mail.same ? mail.value : '',
+      unify_mail: !dayMail && mail.same,
+    })
+  }
+
+  const saveRouteEdit = async () => {
+    let v
+    try {
+      v = await routeForm.validateFields()
+    } catch (e) { return }
+    const payload = {
+      tiers: v.tiers || [],
+      min_seats: Number(v.min_seats || 1),
+      cabins: v.cabins || [],
+    }
+    if (v.unify_mail) payload.notify_email = v.notify_email || ''
+    setRouteBusy(true)
+    try {
+      const r = await api.updateTasks(routeIds(routeEdit.row), payload)
+      msg.success(r.message || '整条航线的提醒条件已更新')
+      setRouteEdit(null)
+      onChanged()
+    } catch (e) {
+      msg.error(e.message)
+    } finally {
+      setRouteBusy(false)
+    }
+  }
 
   // 拉取该航线真实可飞日期（/api/flights/query 的 effective_dates 区间展开成逐日），作为编辑弹窗日期选项；
   // 只保留可飞日期：原任务里无效日期在打开弹窗时剔除
@@ -1085,26 +1148,34 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                     </Tooltip>
                   ) : null}
                   <div className="task-flight-ops task-group-actions">
-                    <Tooltip title={rowOn ? '停止这条航线的全部航班和日期' : '重新监控这条航线的全部航班和日期'}>
-                      <Button size="small" type={rowOn ? 'default' : 'primary'} icon={<PowerIcon />} onClick={() => toggleRoute(row, !rowOn)}>
-                        {rowOn ? '停止' : '启动'}
-                      </Button>
-                    </Tooltip>
-                    <Popconfirm
-                      title={`删除整条航线 ${routeTitle(row)}`}
-                      description="去程、回程和所有日期一起删掉。价格历史保留，不可撤销。"
-                      okText="删除"
-                      cancelText="取消"
-                      okButtonProps={{ danger: true }}
-                      onConfirm={() => deleteRoute(row)}
-                    >
-                      <Tooltip title="删除">
-                        <Button size="small" type="text" danger icon={<DeleteIcon />} aria-label={`删除 ${routeTitle(row)}`} />
+                    <div className="task-ops-links" />
+                    <TaskPowerButton
+                      on={rowOn}
+                      title={rowOn ? '停止这条航线的全部航班和日期' : '重新监控这条航线的全部航班和日期'}
+                      onClick={() => toggleRoute(row, !rowOn)}
+                    />
+                    <div className="task-ops-icon">
+                      <Tooltip title="统一这条航线的收件人、档位和余票条件">
+                        <Button size="small" type="text" icon={<EditIcon />} aria-label={`统一 ${routeTitle(row)} 的提醒条件`} onClick={() => openRouteEdit(row)} />
                       </Tooltip>
-                    </Popconfirm>
+                    </div>
+                    <div className="task-ops-icon">
+                      <Popconfirm
+                        title={`删除整条航线 ${routeTitle(row)}`}
+                        description="去程、回程和所有日期一起删掉。价格历史保留，不可撤销。"
+                        okText="删除"
+                        cancelText="取消"
+                        okButtonProps={{ danger: true }}
+                        onConfirm={() => deleteRoute(row)}
+                      >
+                        <Tooltip title="删除">
+                          <Button size="small" type="text" danger icon={<DeleteIcon />} aria-label={`删除 ${routeTitle(row)}`} />
+                        </Tooltip>
+                      </Popconfirm>
+                    </div>
                   </div>
                 </header>
-                {monitorDateGroups(row.legs).map((group) => {
+                {monitorDateGroups(row.legs, row.round).map((group) => {
                   const roundReq = row.round ? roundDetailRequest(group) : null
                   const pairState = roundReq ? groupState(group) : 'on'
                   const pairOn = pairState !== 'off'
@@ -1122,33 +1193,33 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                       </div>
                       {roundReq ? (
                         <div className="task-flight-ops">
-                          <span className="task-ops-span">
-                            <span className="task-ops-ghost" aria-hidden>
-                              <Button size="small" tabIndex={-1}>查看详情</Button>
-                              <Button size="small" tabIndex={-1}>回程</Button>
-                            </span>
-                            <Button size="small" type="primary" ghost onClick={() => onOpenDetail && onOpenDetail(roundReq)}>往返详情</Button>
-                          </span>
-                          <Tooltip title={pairOn ? '停止监控这组往返（去程、回程一起），其他日期不受影响' : '重新监控这组往返（去程、回程一起）'}>
-                            <Button size="small" type={pairOn ? 'default' : 'primary'} icon={<PowerIcon />} onClick={() => toggleGroup(group, !pairOn)}>
-                              {pairOn ? '停止' : '启动'}
-                            </Button>
-                          </Tooltip>
-                          <Tooltip title="编辑这组往返（改日期、提醒条件）">
-                            <Button size="small" type="text" icon={<EditIcon />} aria-label={`编辑 ${group.label} 往返`} onClick={() => openPairEdit(group, roundReq)} />
-                          </Tooltip>
-                          <Popconfirm
-                            title={`删除 ${group.label} 这组往返`}
-                            description="去程、回程这几天一起删掉，其他日期继续留在列表里。"
-                            okText="删除"
-                            cancelText="取消"
-                            okButtonProps={{ danger: true }}
-                            onConfirm={() => deleteGroup(group)}
-                          >
-                            <Tooltip title="删除这组往返">
-                              <Button size="small" type="text" danger icon={<DeleteIcon />} aria-label={`删除 ${group.label} 往返`} />
+                          <div className="task-ops-links">
+                            <Button size="small" type="link" className="task-ops-link" onClick={() => onOpenDetail && onOpenDetail(roundReq)}>往返详情</Button>
+                          </div>
+                          <TaskPowerButton
+                            on={pairOn}
+                            title={pairOn ? '停止监控这组往返（去程、回程一起），其他日期不受影响' : '重新监控这组往返（去程、回程一起）'}
+                            onClick={() => toggleGroup(group, !pairOn)}
+                          />
+                          <div className="task-ops-icon">
+                            <Tooltip title="编辑这组往返（改日期、提醒条件）">
+                              <Button size="small" type="text" icon={<EditIcon />} aria-label={`编辑 ${group.label} 往返`} onClick={() => openPairEdit(group, roundReq)} />
                             </Tooltip>
-                          </Popconfirm>
+                          </div>
+                          <div className="task-ops-icon">
+                            <Popconfirm
+                              title={`删除 ${group.label} 这组往返`}
+                              description="去程、回程这几天一起删掉，其他日期继续留在列表里。"
+                              okText="删除"
+                              cancelText="取消"
+                              okButtonProps={{ danger: true }}
+                              onConfirm={() => deleteGroup(group)}
+                            >
+                              <Tooltip title="删除这组往返">
+                                <Button size="small" type="text" danger icon={<DeleteIcon />} aria-label={`删除 ${group.label} 往返`} />
+                              </Tooltip>
+                            </Popconfirm>
+                          </div>
                         </div>
                       ) : null}
                     </div>
@@ -1188,39 +1259,49 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                         </div>
                       </div>
                       <div className="task-flight-ops">
-                        {day ? (isPhone() ? (
-                          <Button size="small" type="primary" ghost onClick={() => openHnaApp(t, day, msg)}>打开 App</Button>
-                        ) : (
-                          <Button size="small" type="link" className="task-jump" href={officialWebUrl(t, day, false)} target="_blank" rel="noreferrer">跳到官网</Button>
-                        )) : null}
-                        <Button
-                          size="small"
-                          disabled={!day}
-                          onClick={() => onOpenDetail && onOpenDetail(taskDetailRequest(t, day))}
-                        >
-                          查看详情
-                        </Button>
-                        <Tooltip title="找对向航班，按去程日期的次日一起监控">
-                          <Button size="small" onClick={() => openReturn(t)}>回程</Button>
-                        </Tooltip>
-                        <Button size="small" type={rowOn ? 'default' : 'primary'} icon={<PowerIcon />} onClick={() => toggleEnabled(t, !rowOn, dates)}>
-                          {rowOn ? '停止' : '启动'}
-                        </Button>
-                        <Tooltip title="编辑">
-                          <Button size="small" type="text" icon={<EditIcon />} aria-label={`编辑 ${t.flight_no || '监控任务'}`} onClick={() => openEdit(t, day)} />
-                        </Tooltip>
-                        <Popconfirm
-                          title={day ? `删除 ${monitorDayLabel(day)} 这一天` : `删除监控 ${t.from_city} → ${t.to_city}`}
-                          description={day && (t.dates || []).length > 1 ? '只删这一天，其他日期继续留在列表里。' : '删除后 daemon 将不再查询，价格历史保留。不可撤销。'}
-                          okText="删除"
-                          cancelText="取消"
-                          okButtonProps={{ danger: true }}
-                          onConfirm={() => doDelete(t, day)}
-                        >
-                          <Tooltip title="删除">
-                            <Button size="small" type="text" danger icon={<DeleteIcon />} aria-label={`删除 ${t.flight_no || '监控任务'}`} />
+                        <div className="task-ops-links">
+                          {day ? (isPhone() ? (
+                            <Button size="small" type="link" className="task-ops-link" onClick={() => openHnaApp(t, day, msg)}>打开 App</Button>
+                          ) : (
+                            <Button size="small" type="link" className="task-ops-link" href={officialWebUrl(t, day, false)} target="_blank" rel="noreferrer">跳到官网</Button>
+                          )) : null}
+                          <Button
+                            size="small"
+                            type="link"
+                            className="task-ops-link"
+                            disabled={!day}
+                            onClick={() => onOpenDetail && onOpenDetail(taskDetailRequest(t, day))}
+                          >
+                            查看详情
+                          </Button>
+                          <Tooltip title="找对向航班，按去程日期的次日一起监控">
+                            <Button size="small" type="link" className="task-ops-link" onClick={() => openReturn(t)}>回程</Button>
                           </Tooltip>
-                        </Popconfirm>
+                        </div>
+                        <TaskPowerButton
+                          on={rowOn}
+                          title={rowOn ? '停止这一天' : '重新监控这一天'}
+                          onClick={() => toggleEnabled(t, !rowOn, dates)}
+                        />
+                        <div className="task-ops-icon">
+                          <Tooltip title="编辑">
+                            <Button size="small" type="text" icon={<EditIcon />} aria-label={`编辑 ${t.flight_no || '监控任务'}`} onClick={() => openEdit(t, day)} />
+                          </Tooltip>
+                        </div>
+                        <div className="task-ops-icon">
+                          <Popconfirm
+                            title={day ? `删除 ${monitorDayLabel(day)} 这一天` : `删除监控 ${t.from_city} → ${t.to_city}`}
+                            description={day && (t.dates || []).length > 1 ? '只删这一天，其他日期继续留在列表里。' : '删除后 daemon 将不再查询，价格历史保留。不可撤销。'}
+                            okText="删除"
+                            cancelText="取消"
+                            okButtonProps={{ danger: true }}
+                            onConfirm={() => doDelete(t, day)}
+                          >
+                            <Tooltip title="删除">
+                              <Button size="small" type="text" danger icon={<DeleteIcon />} aria-label={`删除 ${t.flight_no || '监控任务'}`} />
+                            </Tooltip>
+                          </Popconfirm>
+                        </div>
                       </div>
                     </div>
                   )
@@ -1261,6 +1342,77 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
             onDates={(key, v) => setReturnGroups((prev) => prev.map((x) => (x.key === key ? { ...x, selected: v, checked: v.length > 0, returnTouched: true, choicePinned: true } : x)))}
           />
         )}
+      </Modal>
+
+      <Modal
+        open={!!routeEdit}
+        title={routeEdit ? `统一条件：${routeTitle(routeEdit.row)}` : ''}
+        width={640}
+        okText="保存"
+        okButtonProps={{ loading: routeBusy }}
+        cancelText="取消"
+        onCancel={() => setRouteEdit(null)}
+        onOk={saveRouteEdit}
+      >
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12 }}>
+          这条航线上的航班都改成同一套提醒条件。航班号、时刻和日期不动。
+        </Typography.Paragraph>
+        {routeEdit?.mixed ? (
+          <Alert type="info" showIcon style={{ marginBottom: 12 }} message="各班现在的条件不完全一样。保存后整条都按这里的档位、余票和舱位。" />
+        ) : null}
+        {routeEdit?.dayMail ? (
+          <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="有些日期单独指定了收件人。勾上「收件人也改成同一个」再保存，这些按天设置会被清掉。" />
+        ) : null}
+        <Form form={routeForm} layout="vertical">
+          <Row gutter={12}>
+            <Col span={8}>
+              <Form.Item name="tiers" label="档位条件（多选，空=不限）">
+                <Select mode="multiple" placeholder="不限" options={TIER_OPTIONS} maxTagCount="responsive" />
+              </Form.Item>
+            </Col>
+            <Col span={7}>
+              <Form.Item name="min_seats" label="余票条件">
+                <Select
+                  options={[
+                    { label: '不限（有票即提醒）', value: 1 },
+                    { label: '至少 2 张', value: 2 },
+                    { label: '至少 3 张', value: 3 },
+                    { label: '至少 4 张', value: 4 },
+                    { label: '至少 5 张', value: 5 },
+                  ]}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={9}>
+              <Form.Item name="cabins" label="舱位白名单（空=不限舱位）">
+                <Select
+                  mode="tags"
+                  placeholder="如 B、C、Z、R…"
+                  options={CABIN_OPTIONS.map((c) => ({ value: c, label: c }))}
+                  tokenSeparators={[',', '，']}
+                  maxTagCount="responsive"
+                />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Form.Item name="unify_mail" valuePropName="checked" style={{ marginBottom: 8 }}>
+            <Checkbox>收件人也改成同一个</Checkbox>
+          </Form.Item>
+          <Form.Item
+            name="notify_email"
+            label="邮件收件人"
+            extra={globalMail ? `留空发给默认收件人 ${globalMail}。多个邮箱用逗号分开。` : '留空就用通知管理里的收件人。多个邮箱用逗号分开。'}
+            rules={[{
+              validator: (_, value) => {
+                const parts = String(value || '').split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean)
+                if (parts.some((part) => !part.includes('@'))) return Promise.reject(new Error('收件人要写成邮箱，多个用逗号分开'))
+                return Promise.resolve()
+              },
+            }]}
+          >
+            <Input disabled={!routeUnifyMail} placeholder={globalMail ? `留空发给 ${globalMail}` : 'name@example.com'} />
+          </Form.Item>
+        </Form>
       </Modal>
 
       <Modal
@@ -2098,7 +2250,7 @@ function Notifications({ data, onChanged, msg }) {
   const feishu = cfg.feishu || {}
   const nch = cfg.notify_channels || {}
   const ws = nch.feishu_ws || {}
-  const historyRows = data.notification_history || []
+  const historyRows = [...(data.notification_history || [])].reverse()
   const confirms = data.card_confirmations || []
   const [fsForm] = Form.useForm()
   const [keysRaw, setKeysRaw] = useState('')
@@ -6905,7 +7057,7 @@ function History({ data, autoRefresh, setAutoRefresh, msg, refresh }) {
         }
       >
         <div className="log-view">
-          {(data.logs || []).map((line, i) => {
+          {[...(data.logs || [])].reverse().map((line, i) => {
             const cls = line.includes('错误') || line.includes('[阻断]') || line.includes('E00001') ? 'err'
               : line.includes('警告') || line.includes('退避') ? 'warn' : ''
             return <div key={i} className={cls}>{line}</div>
