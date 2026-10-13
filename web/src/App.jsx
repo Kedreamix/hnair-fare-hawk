@@ -6777,7 +6777,6 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
                     }}
                   >
                     {recentLabel(item)}
-                    {item.product && item.product !== 'all' ? ` · ${item.product}` : ''}
                   </Tag>
                 ))}
               </Space>
