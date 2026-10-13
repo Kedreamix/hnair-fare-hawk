@@ -447,17 +447,21 @@ def _make_hnair_sign(
 
 def _extract_itineraries(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """从响应体提取航班列表。"""
+    # 业务拒绝常见 data: null；不能对非 dict 再 .get。
+    inner = data.get("data")
+    if not isinstance(inner, dict):
+        inner = {}
     # 优先尝试标准嵌套结构
     air_itineraries = (
-        data.get("data", {}).get("airItineraries")
+        inner.get("airItineraries")
         or data.get("airItineraries")
-        or data.get("data", {}).get("itineraries")
+        or inner.get("itineraries")
         or data.get("itineraries")
     )
     if isinstance(air_itineraries, list):
         return air_itineraries
 
-    origin_destinations = data.get("data", {}).get("originDestinations")
+    origin_destinations = inner.get("originDestinations")
     if isinstance(origin_destinations, list) and origin_destinations:
         first_destination = origin_destinations[0]
         if isinstance(first_destination, dict):
@@ -850,6 +854,75 @@ def _is_auth_failure(status_code: int, data: Dict[str, Any]) -> tuple[bool, str]
     return False, ""
 
 
+_BENIGN_ERROR_CODES = {"", "0", "00", "0000", "00000", "200", "ok", "success", "true"}
+_NO_FLIGHT_HINTS = ("无航班", "无可用", "暂无", "没有航班", "无票", "无结果", "no flight")
+
+
+def _clean_reason(text: str) -> str:
+    """压成单行，避免状态串 `rejected:<reason>` 被换行或首尾冒号拆坏。"""
+    return " ".join(str(text or "").split()).strip(" :")[:180]
+
+
+def _looks_like_no_flights(message: str) -> bool:
+    text = str(message or "").strip()
+    lowered = text.lower()
+    return any(hint in text or hint in lowered for hint in _NO_FLIGHT_HINTS)
+
+
+def _layer_error_code(layer: Dict[str, Any]) -> str:
+    for key in ("errorCode", "error_code", "code"):
+        raw = str(layer.get(key) or "").strip()
+        if not raw or raw.lower() in _BENIGN_ERROR_CODES or raw.isdigit():
+            continue
+        return raw
+    return ""
+
+
+def _business_rejection_reason(data: Dict[str, Any]) -> str:
+    """业务拒绝的原因。空字符串表示这不是拒绝（含「当天无航班」）。
+
+    无票时接口常给 success=false 且没有错误码，这仍是无航班。
+    E00005 这类错误码（例如用城市码 BJS + type 0 去套机场三字码）才是业务拒绝。
+    """
+    if not isinstance(data, dict):
+        return ""
+    layers: List[Dict[str, Any]] = [data]
+    inner = data.get("data")
+    if isinstance(inner, dict):
+        layers.append(inner)
+    for layer in layers:
+        code = _layer_error_code(layer)
+        message = str(layer.get("errorMessage") or layer.get("error_message") or "").strip()
+        if not message and layer.get("success") is False:
+            message = str(layer.get("message") or layer.get("msg") or "").strip()
+        if code:
+            if message and not _looks_like_no_flights(message):
+                text = message if code in message else f"{code} {message}"
+                return _clean_reason(text)
+            return _clean_reason(code)
+        if layer.get("success") is False and message and not _looks_like_no_flights(message):
+            return _clean_reason(message)
+    return ""
+
+
+def _apply_airport_route(origin_destinations: Any, from_code: str, to_code: str, date: str) -> None:
+    """把本次查询写成机场三字码，并把出发/到达类型固定为 1。
+
+    抓包模板若是城市码（如北京 BJS、originType/destinationType 为 0），
+    只替换三字码、留下 type 0，接口会回 E00005，看起来像没有航班。
+    """
+    if not isinstance(origin_destinations, list) or not origin_destinations:
+        return
+    first = origin_destinations[0]
+    if not isinstance(first, dict):
+        return
+    first["origin"] = str(from_code or "").strip().upper()
+    first["destination"] = str(to_code or "").strip().upper()
+    first["departureDate"] = date
+    first["originType"] = "1"
+    first["destinationType"] = "1"
+
+
 def _load_captured_request_profile(fare_type: str) -> Dict[str, Any]:
     """读取本地保存的完整浏览器请求，作为当前票价类型的请求模板。"""
     config = _read_json_file(BASE_DIR / "config.json")
@@ -918,10 +991,7 @@ def _build_request_profile(
         payload = deepcopy(captured_profile["payload"])
         data = payload.setdefault("data", {})
         origin_destinations = data.setdefault("originDestinations", [{}])
-        if origin_destinations and isinstance(origin_destinations[0], dict):
-            origin_destinations[0]["origin"] = from_code.upper()
-            origin_destinations[0]["destination"] = to_code.upper()
-            origin_destinations[0]["departureDate"] = date
+        _apply_airport_route(origin_destinations, from_code, to_code, date)
         if fare_type == "plus":
             path = urlsplit(str(captured_profile.get("url", ""))).path
             token = str((captured_profile.get("query") or {}).get("token", "")).strip()
@@ -975,10 +1045,7 @@ def _build_request_profile(
 
     data = payload.setdefault("data", {})
     origin_destinations = data.setdefault("originDestinations", [{}])
-    if origin_destinations and isinstance(origin_destinations[0], dict):
-        origin_destinations[0]["origin"] = from_code.upper()
-        origin_destinations[0]["destination"] = to_code.upper()
-        origin_destinations[0]["departureDate"] = date
+    _apply_airport_route(origin_destinations, from_code, to_code, date)
 
     # 静态模板仅作为未导入完整请求时的兼容兜底。
     if fare_type == "plus":
@@ -1099,7 +1166,8 @@ def _request_price(profile: Dict[str, Any]) -> "tuple[str, List[Dict[str, Any]]]
     - "ok"      ：正常返回，fares 为可购航班列表；
     - "network" ：网络不通 / 网关错误 / 429 限流 / 非 200；
     - "parse"   ：响应不是预期 JSON 结构；
-    - "empty"   ：200 且解析成功，但没有任何可购航班。
+    - "empty"   ：200 且解析成功，但没有任何可购航班；
+    - "rejected:<reason>" ：业务拒绝（如 E00005），不是无航班。
 
     鉴权失败（401/403/验签错误/占位符）一律抛 TokenExpiredError。
     """
@@ -1153,6 +1221,10 @@ def _request_price(profile: Dict[str, Any]) -> "tuple[str, List[Dict[str, Any]]]
     auth_failed, auth_hint = _is_auth_failure(response.status_code, data)
     if auth_failed:
         raise TokenExpiredError(f"接口鉴权失败：{auth_hint}" if auth_hint else "接口鉴权失败")
+
+    reason = _business_rejection_reason(data)
+    if reason:
+        return f"rejected:{reason}", []
 
     itineraries = _extract_itineraries(data)
     if not itineraries:

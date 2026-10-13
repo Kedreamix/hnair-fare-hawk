@@ -642,6 +642,10 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
             if status == "parse":
                 append_log("接口返回结构异常（非 JSON 或字段变化），本轮跳过。")
                 continue
+            if isinstance(status, str) and status.startswith("rejected:"):
+                reason = status.split(":", 1)[1].strip() or "未说明原因"
+                append_log(f"接口业务拒绝（rejected）：{reason}。不是无可用航班。")
+                continue
             results[(from_code, to_code, date)] = {"fares": fares or []}
             if not fares:
                 append_log("接口正常返回但无可用航班（无票或价格不可购）。")

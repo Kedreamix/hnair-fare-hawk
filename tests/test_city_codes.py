@@ -29,6 +29,17 @@ def test_multi_airport_city_prefers_sediment_main_airport() -> None:
     assert resolve_code("北京") == ("PEK", [])
 
 
+def test_urumqi_tianshan_keeps_diwobao_alias() -> None:
+    # 现用名是天山；地窝堡、乌鲁木齐地窝堡仍解析到 URC
+    assert resolve_code("乌鲁木齐") == ("URC", [])
+    assert resolve_code("天山") == ("URC", [])
+    assert resolve_code("乌鲁木齐天山") == ("URC", [])
+    assert resolve_code("地窝堡") == ("URC", [])
+    assert resolve_code("乌鲁木齐地窝堡") == ("URC", [])
+    assert resolve_code("地窝堡机场") == ("URC", [])
+    assert code_to_city_label("URC") == "乌鲁木齐天山（URC）"
+
+
 def test_multi_airport_explicit_airport_still_works() -> None:
     # 明确指定机场名/三字码不受主机场策略影响
     assert resolve_code("成都双流") == ("CTU", [])

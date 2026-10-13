@@ -259,7 +259,7 @@ def run_round(
     remaining = [t for t in tasks if t["key"] not in done_set]
     if args.limit > 0:
         remaining = remaining[: args.limit]
-    stat = {"ok": 0, "empty": 0, "network": 0, "parse": 0, "error": 0}
+    stat = {"ok": 0, "empty": 0, "network": 0, "parse": 0, "error": 0, "rejected": 0}
     if not remaining:
         return done_set, failed, stat, False
 
@@ -312,6 +312,13 @@ def run_round(
                     print(f"[{i}/{len(remaining)}] {from_}→{to_} {date_} empty: 该日无航班/无价格，换下一日期")
                     time.sleep(args.interval)
                     continue
+                elif isinstance(status, str) and status.startswith("rejected:"):
+                    # 业务拒绝不是「无航班」，也不算网络/限流，不能拿来触发整轮暂停。
+                    reason = status.split(":", 1)[1].strip() or "未说明原因"
+                    stat["rejected"] += 1
+                    fail_streak = 0
+                    print(f"[{i}/{len(remaining)}] {from_}→{to_} {date_} rejected: {reason}")
+                    break
                 else:
                     # network/parse 计入风控失败连续计数，达到阈值自动暂停
                     stat[status if status in stat else "empty"] += 1

@@ -453,6 +453,35 @@ def test_polling_save_and_clamp(api_server):
     assert poll["night_min_sec"] == 10 and poll["night_max_sec"] == 30
 
 
+def test_price_query_exposes_business_rejection(api_server, monkeypatch):
+    base, tmp = api_server
+    cfg = json.loads((tmp / "config.json").read_text(encoding="utf-8"))
+    cfg["plus_curl"] = "curl https://app.hnair.com/ticket/lfs/ffl/airLowFareSearch"
+    cfg["normal_curl"] = "curl https://app.hnair.com/ticket/lfs/airLowFareSearch"
+    cfg["price_query"] = {"enabled": True, "min_interval": 2}
+    (tmp / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+
+    def fake_fetch(from_code, to_code, date, fare_type="normal"):
+        if fare_type == "plus":
+            return "rejected:E00005 出发到达类型不匹配", []
+        return "empty", []
+
+    monkeypatch.setattr(web_api, "fetch_price_status", fake_fetch)
+    r = requests.get(
+        f"{base}/api/flights/prices",
+        params={"from": "SZX", "to": "URC", "date": "2026-10-20"},
+        timeout=5,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["prices"]["plus"]["status"] == "rejected"
+    assert body["prices"]["plus"]["reason"] == "E00005 出发到达类型不匹配"
+    assert body["prices"]["plus"]["note"] == "E00005 出发到达类型不匹配"
+    assert body["prices"]["plus"]["prices"] == {}
+    assert body["prices"]["normal"]["status"] == "empty"
+    assert "reason" not in body["prices"]["normal"]
+
+
 def test_flights_heatmap_one_way_destinations(api_server):
     """单程热力接口：深圳在冬春日返回目的地、坐标，以及按日的 666/2666 班次。"""
     base, _ = api_server

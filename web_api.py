@@ -499,6 +499,15 @@ def _serve_static(handler: BaseHTTPRequestHandler, path: str) -> None:
     handler.wfile.write(data)
 
 
+def _fare_price_view(status: str, pmap: Dict[str, int]) -> Dict[str, Any]:
+    """把 fetcher 的 `rejected:<reason>` 拆成 status=rejected 和 reason，避免前端当成无航班。"""
+    text = str(status or "")
+    if text.startswith("rejected:"):
+        reason = text.split(":", 1)[1].strip() or "未说明原因"
+        return {"status": "rejected", "reason": reason, "prices": pmap, "note": reason}
+    return {"status": status, "prices": pmap}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "HNAControl/1.0"
 
@@ -699,7 +708,7 @@ class Handler(BaseHTTPRequestHandler):
                 times = f.get("times")
                 if fl and isinstance(times, dict) and fl not in times_map:
                     times_map[fl] = times
-            prices[fare_type] = {"status": status, "prices": pmap}
+            prices[fare_type] = _fare_price_view(status, pmap)
             # 查询观测回写：把本次查价观测到的实时事实（时刻/航站楼/经停）记入观测库，
             # 后续 /api/flights/query 会用它覆盖底表静态 CSV/HNA 字段，底表据此渐进更新。
             if fares:
