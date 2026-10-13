@@ -534,6 +534,26 @@ function pairMonitorRows(tasks) {
   return rows
 }
 
+function emailForDay(task, day) {
+  const picked = String((task?.notify_email_by_date || {})[day] || '').trim()
+  if (picked) return picked
+  return String(task?.notify_email || '').trim()
+}
+
+function routeMailSummary(row) {
+  const kinds = []
+  const lines = []
+  ;(row.legs || []).forEach((task) => {
+    ;(task.dates || []).forEach((day) => {
+      const addr = emailForDay(task, day)
+      if (!addr) return
+      if (!kinds.includes(addr)) kinds.push(addr)
+      lines.push(`${monitorDayLabel(day)} ${task.flight_no || ''} ${addr}`.trim())
+    })
+  })
+  return { kinds, lines }
+}
+
 function monitorDayLabel(iso) {
   const day = String(iso || '')
   const md = day.slice(5).replace('-', '/')
@@ -695,7 +715,8 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
       tiers: out.tiers || [],
       min_seats: Number(out.min_seats || 1),
       cabins: out.cabins || [],
-      notify_email: out.notify_email || req.backTask?.notify_email || '',
+      notify_email: emailForDay(out, req.outDate) || emailForDay(req.backTask, req.backDate),
+      mail_scope: 'pair',
     })
     const safe = (task) => loadFlightDates(task).catch(() => [])
     const [outDates, backDates] = await Promise.all([safe(out), safe(req.backTask)])
@@ -715,16 +736,22 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
     const nextDates = (task, oldDay, newDay) => (
       [...new Set([...(task.dates || []).filter((day) => day !== oldDay), newDay])].sort()
     )
-    const extra = {
+    const mail = v.notify_email || ''
+    const shared = {
       tiers: v.tiers || [],
       min_seats: Number(v.min_seats || 1),
       cabins: v.cabins || [],
-      notify_email: v.notify_email || '',
     }
+    const outExtra = v.mail_scope === 'flight'
+      ? { ...shared, notify_email: mail }
+      : { ...shared, notify_email: mail, notify_email_dates: [v.outDate] }
+    const backExtra = v.mail_scope === 'flight'
+      ? { ...shared, notify_email: mail }
+      : { ...shared, notify_email: mail, notify_email_dates: [v.backDate] }
     setPairBusy(true)
     try {
-      await api.updateTasks(req.outTask.ids || [req.outTask.id], { dates: nextDates(req.outTask, req.outDate, v.outDate), ...extra })
-      await api.updateTasks(req.backTask.ids || [req.backTask.id], { dates: nextDates(req.backTask, req.backDate, v.backDate), ...extra })
+      await api.updateTasks(req.outTask.ids || [req.outTask.id], { dates: nextDates(req.outTask, req.outDate, v.outDate), ...outExtra })
+      await api.updateTasks(req.backTask.ids || [req.backTask.id], { dates: nextDates(req.backTask, req.backDate, v.backDate), ...backExtra })
       msg.success('往返监控已更新')
       setPairEdit(null)
       onChanged()
@@ -742,17 +769,6 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
     if (!dates.length) return t.enabled !== false
     return dates.some((day) => !paused.has(day))
   })
-  const routeMail = (row) => {
-    const values = []
-    row.legs.forEach((t) => {
-      String(t.notify_email || '').split(',').map((s) => s.trim()).filter(Boolean).forEach((addr) => {
-        if (!values.includes(addr)) values.push(addr)
-      })
-    })
-    return values
-  }
-  const mailHint = (addrs) => (addrs.length <= 1 ? (addrs[0] || '') : `${addrs[0]} 等 ${addrs.length} 人`)
-
   const toggleRoute = async (row, enabled) => {
     try {
       await api.setTaskEnabled(routeIds(row), enabled)
@@ -866,6 +882,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
 
   // ---- 编辑弹窗 ----
   const [editRow, setEditRow] = useState(null) // 当前编辑的分组行（null=关闭）
+  const [editDay, setEditDay] = useState('')
   const [editBusy, setEditBusy] = useState(false)
   const [dateOpts, setDateOpts] = useState([]) // 该航线真实可飞日期（编辑弹窗日期选项，逐日）
   const [dateLoading, setDateLoading] = useState(false)
@@ -894,8 +911,9 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
     }
   }
 
-  const openEdit = async (t) => {
+  const openEdit = async (t, day) => {
     setEditRow(t)
+    setEditDay(day || '')
     ensureDateOpts(t)
     editForm.setFieldsValue({
       flight_no: t.flight_no || '',
@@ -905,7 +923,8 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
       tiers: t.tiers || [],
       min_seats: Number(t.min_seats || 1),
       cabins: t.cabins || [],
-      notify_email: t.notify_email || '',
+      notify_email: day ? emailForDay(t, day) : (t.notify_email || ''),
+      mail_scope: day ? 'day' : 'flight',
     })
   }
 
@@ -921,13 +940,15 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
     }
     setEditBusy(true)
     try {
-      const r = await api.updateTasks(editRow.ids, {
+      const payload = {
         dates,
         tiers: v.tiers || [],
         min_seats: Number(v.min_seats || 1),
         cabins: v.cabins || [],
         notify_email: v.notify_email || '',
-      })
+      }
+      if (v.mail_scope === 'day' && editDay) payload.notify_email_dates = [editDay]
+      const r = await api.updateTasks(editRow.ids, payload)
       msg.success(r.message || '已更新监控任务')
       setEditRow(null)
       onChanged()
@@ -1024,14 +1045,18 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
           <div className="task-groups">
             {taskRows.map((row) => {
               const rowOn = routeActive(row)
-              const mailTo = routeMail(row)
+              const mailSummary = routeMailSummary(row)
               return (
               <section key={row.key} className="task-group">
                 <header className="task-group-head">
                   <b>{routeTitle(row)}</b>
                   <Tag color={row.round ? 'green' : 'default'} style={{ marginInlineEnd: 0 }}>{row.round ? '往返' : '单程'}</Tag>
                   <span>{row.legs.length} 班</span>
-                  {mailTo.length ? <Tag color="gold" style={{ marginInlineEnd: 0 }}>邮件 {mailHint(mailTo)}</Tag> : null}
+                  {mailSummary.kinds.length ? (
+                    <Tooltip title={mailSummary.lines.map((line) => <div key={line}>{line}</div>)}>
+                      <Tag color="gold" style={{ marginInlineEnd: 0 }}>邮件 {mailSummary.kinds.length} 种收件人</Tag>
+                    </Tooltip>
+                  ) : null}
                   <div className="task-flight-ops task-group-actions">
                     <Tooltip title={rowOn ? '停止这条航线的全部航班和日期' : '重新监控这条航线的全部航班和日期'}>
                       <Button size="small" type={rowOn ? 'default' : 'primary'} icon={<PowerIcon />} onClick={() => toggleRoute(row, !rowOn)}>
@@ -1128,6 +1153,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                           {(t.tiers || []).map((p) => <Tag key={p} style={{ marginInlineEnd: 0 }}>提醒 {p}</Tag>)}
                           {seatBits.map((bit) => <Tag key={bit} color="blue" style={{ marginInlineEnd: 0 }}>{bit}</Tag>)}
                           {stopTag(t)}
+                          {day && emailForDay(t, day) ? <Tag color="gold" style={{ marginInlineEnd: 0 }}>邮件 {emailForDay(t, day)}</Tag> : null}
                           {stopDetail(t) ? <span className="task-flight-dates">{stopDetail(t)}</span> : null}
                         </div>
                       </div>
@@ -1151,7 +1177,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                           {rowOn ? '停止' : '启动'}
                         </Button>
                         <Tooltip title="编辑">
-                          <Button size="small" type="text" icon={<EditIcon />} aria-label={`编辑 ${t.flight_no || '监控任务'}`} onClick={() => openEdit(t)} />
+                          <Button size="small" type="text" icon={<EditIcon />} aria-label={`编辑 ${t.flight_no || '监控任务'}`} onClick={() => openEdit(t, day)} />
                         </Tooltip>
                         <Popconfirm
                           title={day ? `删除 ${monitorDayLabel(day)} 这一天` : `删除监控 ${t.from_city} → ${t.to_city}`}
@@ -1295,7 +1321,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
           <Form.Item
             name="notify_email"
             label="邮件收件人"
-            extra="留空就用通知管理里的收件人。多个邮箱用逗号分开。只影响这一班。"
+            extra="留空就用通知管理里的收件人。多个邮箱用逗号分开。"
             rules={[{
               validator: (_, value) => {
                 const parts = String(value || '').split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean)
@@ -1305,6 +1331,12 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
             }]}
           >
             <Input placeholder="name@example.com, other@example.com" />
+          </Form.Item>
+          <Form.Item name="mail_scope" label="收件人改动范围">
+            <Radio.Group>
+              {editDay ? <Radio value="day">只改 {monitorDayLabel(editDay)} 这一天</Radio> : null}
+              <Radio value="flight">这个航班全部日期</Radio>
+            </Radio.Group>
           </Form.Item>
           {editRow && (editRow.ids || []).length > 1 && (
             <Alert type="warning" showIcon message={`该组包含 ${editRow.ids.length} 条底层任务（同一航班的多个监控日期），保存将对组内全部任务生效。`} />
@@ -1393,7 +1425,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
           <Form.Item
             name="notify_email"
             label="邮件收件人"
-            extra="留空就用通知管理里的收件人。多个邮箱用逗号分开。去程和回程这一组都用这份名单。"
+            extra="留空就用通知管理里的收件人。多个邮箱用逗号分开。"
             rules={[{
               validator: (_, value) => {
                 const parts = String(value || '').split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean)
@@ -1403,6 +1435,12 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
             }]}
           >
             <Input placeholder="name@example.com, other@example.com" />
+          </Form.Item>
+          <Form.Item name="mail_scope" label="收件人改动范围">
+            <Radio.Group>
+              <Radio value="pair">只改这组往返</Radio>
+              <Radio value="flight">去程回程全部日期</Radio>
+            </Radio.Group>
           </Form.Item>
         </Form>
       </Modal>

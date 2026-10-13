@@ -427,6 +427,15 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "notify_email": ",".join(dict.fromkeys(
                 str(t.get("notify_email") or "").strip() for t in group if str(t.get("notify_email") or "").strip()
             )),
+            "notify_email_by_date": {
+                str(day).strip(): str(addr).strip()
+                for t in group
+                for day, addr in (
+                    t.get("notify_email_by_date").items()
+                    if isinstance(t.get("notify_email_by_date"), dict) else ()
+                )
+                if str(day).strip() and str(addr).strip()
+            },
             "enabled": any(bool(t.get("enabled", True)) for t in group),
             "disabled_dates": sorted({
                 str(d).strip() for t in group for d in (t.get("disabled_dates") or []) if str(d).strip()

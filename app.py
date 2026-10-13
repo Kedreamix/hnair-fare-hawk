@@ -409,6 +409,7 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
 
         if key in idx:
             t = existing[idx[key]]
+            old_dates = set(expand_task_dates(t))
             merged_dates = _norm_dates(expand_task_dates(t) + dates)
             t["dates"] = merged_dates
             t["date"] = merged_dates[0]
@@ -442,8 +443,14 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
                 # 同批转的余票/舱位条件一致：显式指定时覆盖（更严格的监控条件生效）
                 t["min_seats"] = norm_min
                 t["cabins"] = norm_cabins
-            if notify_email:
-                t["notify_email"] = notify_email
+            # 合并不改航班默认收件人。新日期和默认不同时，只记在这一天上。
+            if notify_email and notify_email != _norm_notify_email(t.get("notify_email")):
+                fresh = [day for day in dates if day not in old_dates]
+                if fresh:
+                    mapping = _email_overrides(t)
+                    for day in fresh:
+                        mapping[day] = notify_email
+                    _set_email_overrides(t, mapping)
             merged += 1
         else:
             task = {
@@ -480,6 +487,35 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"created": created, "merged": merged}
 
 
+def _email_overrides(task: Dict[str, Any]) -> Dict[str, str]:
+    raw = task.get("notify_email_by_date")
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for day, value in raw.items():
+        key = str(day or "").strip()
+        addr = _norm_notify_email(value)
+        if key and addr:
+            out[key] = addr
+    return out
+
+
+def _set_email_overrides(task: Dict[str, Any], mapping: Dict[str, str]) -> None:
+    if mapping:
+        task["notify_email_by_date"] = dict(sorted(mapping.items()))
+    else:
+        task.pop("notify_email_by_date", None)
+
+
+def task_email_for(task: Dict[str, Any], day: str) -> str:
+    """命中某一天时用的收件人：当天覆盖，否则航班默认，都没有则空（调用方用全局收件人）。"""
+    overrides = _email_overrides(task)
+    picked = overrides.get(str(day or "").strip(), "")
+    if picked:
+        return picked
+    return _norm_notify_email(task.get("notify_email"))
+
+
 def _norm_notify_email(value: Any) -> str:
     """航线单独收件人：逗号/分号/换行分隔，只保留带 @ 的地址。"""
     raw = str(value or "").replace(";", ",").replace("；", ",").replace("，", ",").replace("\n", ",")
@@ -501,7 +537,8 @@ def update_tasks(task_ids: List[str], fields: Dict[str, Any]) -> int:
     """按 id 列表更新任务（前端编辑弹窗；分组行一次更新组内全部任务）。
 
     可改字段：from_code/to_code/dates/flight_no/dep_time/arr_time/
-    tiers（多选白名单，空=不限）/min_seats/cabins/notify_email（本航线收件人，空=用全局收件人）。
+    tiers（多选白名单，空=不限）/min_seats/cabins/notify_email（航班默认收件人，空=用全局收件人）。
+    notify_email_dates 有值时只改这些日期的覆盖，不改航班默认收件人。
     保留：id/enabled/target_price/fare_type/created_at。
     返回受影响条数。
     """
@@ -551,8 +588,24 @@ def update_tasks(task_ids: List[str], fields: Dict[str, Any]) -> int:
                 task["min_seats"] = 1
         if "cabins" in fields:
             task["cabins"] = _norm_cabins(fields.get("cabins"))
-        if "notify_email" in fields:
-            task["notify_email"] = _norm_notify_email(fields.get("notify_email"))
+        current_days = set(expand_task_dates(task))
+        mapping = {day: addr for day, addr in _email_overrides(task).items() if day in current_days}
+        scope = fields.get("notify_email_dates")
+        if isinstance(scope, list):
+            wanted = {str(day).strip() for day in scope if str(day).strip()} & current_days
+            value = _norm_notify_email(fields.get("notify_email")) if "notify_email" in fields else ""
+            default_email = _norm_notify_email(task.get("notify_email"))
+            for day in wanted:
+                if not value or value == default_email:
+                    mapping.pop(day, None)
+                else:
+                    mapping[day] = value
+            _set_email_overrides(task, mapping)
+        else:
+            _set_email_overrides(task, mapping)
+            if "notify_email" in fields:
+                task["notify_email"] = _norm_notify_email(fields.get("notify_email"))
+                task.pop("notify_email_by_date", None)
         touched += 1
     if touched:
         _write_json(TASKS_PATH, tasks)

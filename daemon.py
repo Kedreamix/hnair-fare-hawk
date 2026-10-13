@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 
 import portalocker
 
+from app import task_email_for
 from backend.channels import apply_task_email, build_confirm_card, hna_jump_block, notify_channels
 import backend.feishu_ws as feishu_ws  # noqa: E402
 from backend.fetcher import TokenExpiredError, fetch_price_status
@@ -794,7 +795,7 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
                 alert_title, alert_content, callback_key="price_alert", action_value=fingerprint
             )
             notify_results = notify_channels(
-                cfg=apply_task_email(notify_cfg, alert_task.get("notify_email")),
+                cfg=apply_task_email(notify_cfg, task_email_for(alert_task, date)),
                 level="important",
                 title=alert_title,
                 content=alert_content,

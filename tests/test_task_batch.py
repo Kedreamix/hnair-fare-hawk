@@ -79,7 +79,8 @@ def test_add_tasks_batch_creates_new(app_env):
     }])
     saved = next(row for row in _read_tasks(app_env) if row["flight_no"] == "HU7001")
     assert saved["dates"] == ["2026-10-01", "2026-10-02"]
-    assert saved["notify_email"] == "b@example.com"
+    assert saved["notify_email"] == "a@example.com"
+    assert saved["notify_email_by_date"] == {"2026-10-02": "b@example.com"}
 
 
 def test_add_tasks_batch_same_flight_merges_dates(app_env):
@@ -337,6 +338,66 @@ def test_update_tasks_fields(app_env):
     assert t4["notify_email"] == "A@Example.com"
     app_mod.update_tasks([orig_id], {"notify_email": ""})
     assert _read_tasks(app_env)[0]["notify_email"] == ""
+
+
+def test_update_notify_email_for_one_date(app_env):
+    """只改某一天的收件人时，其他日期仍用航班默认收件人。"""
+    app_mod.add_tasks_batch([{
+        "from_code": "PEK", "to_code": "SZX", "dates": ["2026-10-25", "2026-11-08"],
+        "flight_no": "HU7715", "dep_time": "20:45", "arr_time": "00:05",
+        "notify_email": "a@example.com",
+    }])
+    task_id = _read_tasks(app_env)[0]["id"]
+    app_mod.update_tasks([task_id], {
+        "notify_email": "b@example.com",
+        "notify_email_dates": ["2026-11-08"],
+    })
+    saved = _read_tasks(app_env)[0]
+    assert saved["notify_email"] == "a@example.com"
+    assert saved["notify_email_by_date"] == {"2026-11-08": "b@example.com"}
+    assert app_mod.task_email_for(saved, "2026-11-08") == "b@example.com"
+    assert app_mod.task_email_for(saved, "2026-10-25") == "a@example.com"
+    assert app_mod.task_email_for({"notify_email": ""}, "2026-10-25") == ""
+
+
+def test_update_notify_email_without_scope_clears_overrides(app_env):
+    """不带日期范围时，改的是航班默认收件人，并清掉按天覆盖。"""
+    app_mod.add_tasks_batch([{
+        "from_code": "PEK", "to_code": "SZX", "dates": ["2026-10-25", "2026-11-08"],
+        "flight_no": "HU7715", "dep_time": "20:45", "arr_time": "00:05",
+        "notify_email": "a@example.com",
+    }])
+    task_id = _read_tasks(app_env)[0]["id"]
+    app_mod.update_tasks([task_id], {
+        "notify_email": "b@example.com",
+        "notify_email_dates": ["2026-11-08"],
+    })
+    app_mod.update_tasks([task_id], {"notify_email": "c@example.com"})
+    saved = _read_tasks(app_env)[0]
+    assert saved["notify_email"] == "c@example.com"
+    assert "notify_email_by_date" not in saved
+    assert app_mod.task_email_for(saved, "2026-11-08") == "c@example.com"
+    assert app_mod.task_email_for(saved, "2026-10-25") == "c@example.com"
+
+
+def test_batch_merge_keeps_old_recipient(app_env):
+    """并入已有航班时，旧日期的收件人不动，新日期单独记下。"""
+    app_mod.add_tasks_batch([{
+        "from_code": "PEK", "to_code": "SZX", "dates": ["2026-10-25"],
+        "flight_no": "HU7715", "dep_time": "20:45", "arr_time": "00:05",
+        "notify_email": "a@example.com",
+    }])
+    app_mod.add_tasks_batch([{
+        "from_code": "PEK", "to_code": "SZX", "dates": ["2026-11-08"],
+        "flight_no": "HU7715", "dep_time": "20:45", "arr_time": "00:05",
+        "notify_email": "b@example.com",
+    }])
+    saved = _read_tasks(app_env)[0]
+    assert saved["dates"] == ["2026-10-25", "2026-11-08"]
+    assert saved["notify_email"] == "a@example.com"
+    assert saved["notify_email_by_date"] == {"2026-11-08": "b@example.com"}
+    assert app_mod.task_email_for(saved, "2026-10-25") == "a@example.com"
+    assert app_mod.task_email_for(saved, "2026-11-08") == "b@example.com"
 
 
 def test_daemon_task_tier_ok_multi(app_env):
