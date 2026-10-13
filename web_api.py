@@ -340,6 +340,53 @@ def _task_group_key(t: Dict[str, Any]) -> str:
     ])
 
 
+def _product_on_day(
+    from_city: str,
+    to_city: str,
+    flight_no: str,
+    dep_time: str,
+    day: str,
+    fallback: str,
+) -> str:
+    """某一天实际执飞记录上的档位。查不到这个航班时，回退到任务里存的档位。"""
+    if not day or not flight_no:
+        return fallback
+    recs = sediment.query(
+        from_city=from_city,
+        to_city=to_city,
+        flight_no=flight_no,
+        date_str=day,
+        limit=0,
+    )
+    exact = [rec for rec in recs if str(rec.get("flight_no") or "").upper() == flight_no.upper()]
+    if dep_time:
+        timed = [rec for rec in exact if str(rec.get("dep_time") or "") == dep_time]
+        if timed:
+            exact = timed
+    if not exact:
+        return fallback
+    tiers: List[str] = []
+    for rec in exact:
+        for tier in sediment.product_tiers(rec.get("product")):
+            if tier not in ("666", "2666", "66666") or tier in tiers:
+                continue
+            if sediment.date_in_blocks(sediment.tier_blocks(tier), day):
+                continue
+            tiers.append(tier)
+    tiers.sort(key=lambda tier: {"666": 0, "2666": 1, "66666": 2}.get(tier, 9))
+    return "/".join(tiers)
+
+
+def _weekdays(dates: List[str]) -> List[int]:
+    days = []
+    for day in dates:
+        try:
+            days.append(datetime.fromisoformat(day).isoweekday())
+        except ValueError:
+            continue
+    return days
+
+
 def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """任务列表按「出发|到达|航班号|起降时刻」分组合并展示。
 
@@ -372,16 +419,18 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         stop = snap.get("stop") if isinstance(snap.get("stop"), dict) else None
         from_city = code_to_city_only(from_code)
         to_city = code_to_city_only(to_code)
-        # 观测覆盖：查价观测到的实时事实（时刻/航站楼/经停）优先于快照
+        # 观测覆盖：查价观测到的实时事实（时刻/航站楼/经停）优先于快照。
+        # 时刻只覆盖观测当天会飞的那一组，避免周一的 20:30 盖掉周日的 20:45。
         from_terminal = ""
         to_terminal = ""
         if flight_no:
             obs = obs_data.get(observations.obs_key(flight_no, from_city, to_city))
             if obs:
-                if obs.get("dep_time"):
-                    dep_time = obs["dep_time"]
-                if obs.get("arr_time"):
-                    arr_time = obs["arr_time"]
+                if observations.observation_matches_weekday({"days": _weekdays(dates)}, obs):
+                    if obs.get("dep_time"):
+                        dep_time = obs["dep_time"]
+                    if obs.get("arr_time"):
+                        arr_time = obs["arr_time"]
                 if isinstance(obs.get("stop"), dict):
                     stop = obs["stop"]
                 from_terminal = str(obs.get("dep_terminal") or "")
@@ -406,6 +455,10 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "date": dates[0] if dates else "",
             "date_end": dates[-1] if dates else "",
             "product": "/".join(products),
+            "product_by_date": {
+                day: _product_on_day(from_city, to_city, flight_no, dep_time, day, "/".join(products))
+                for day in dates
+            },
             "flight_no": flight_no,
             "dep_time": dep_time,
             "arr_time": arr_time,
@@ -435,6 +488,14 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     if isinstance(t.get("notify_email_by_date"), dict) else ()
                 )
                 if str(day).strip() and str(addr).strip()
+            },
+            "round_pairs": {
+                str(day).strip(): info
+                for t in group
+                for day, info in (
+                    t.get("round_pairs").items() if isinstance(t.get("round_pairs"), dict) else ()
+                )
+                if str(day).strip() and isinstance(info, dict)
             },
             "enabled": any(bool(t.get("enabled", True)) for t in group),
             "disabled_dates": sorted({
@@ -999,6 +1060,8 @@ class Handler(BaseHTTPRequestHandler):
                 item["cabins"] = it.get("cabins")
             if "notify_email" in it:
                 item["notify_email"] = str(it.get("notify_email") or "")
+            if isinstance(it.get("round_pairs"), dict):
+                item["round_pairs"] = it.get("round_pairs")
             stop = it.get("stop")
             if isinstance(stop, dict):
                 item["stop"] = stop

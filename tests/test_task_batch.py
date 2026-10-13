@@ -102,8 +102,8 @@ def test_add_tasks_batch_same_flight_merges_dates(app_env):
     assert merged["dates"] == ["2026-09-20", "2026-09-21", "2026-09-22"]
     assert merged["date"] == "2026-09-20"
     assert merged["date_end"] == "2026-09-22"
-    # product 并集
-    assert set(merged["product"].split("/")) == {"666", "2666"}
+    # 档位用这次传入的值，不把上一航季的档位并进来
+    assert merged["product"] == "2666"
     # 快照保留
     assert merged["flight_no"] == "HU1234"
     assert merged["dep_time"] == "08:00"
@@ -398,6 +398,102 @@ def test_batch_merge_keeps_old_recipient(app_env):
     assert saved["notify_email_by_date"] == {"2026-11-08": "b@example.com"}
     assert app_mod.task_email_for(saved, "2026-10-25") == "a@example.com"
     assert app_mod.task_email_for(saved, "2026-11-08") == "b@example.com"
+
+
+def test_batch_merge_adds_recipient_to_existing_day(app_env):
+    """已有日期再关注一次：这次的收件人加到当天原有收件人后面。没填就加默认收件人。"""
+    config = json.loads((app_env / "config.json").read_text(encoding="utf-8"))
+    config.setdefault("notify_channels", {}).setdefault("email", {})["receiver"] = "me@example.com"
+    (app_env / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    base = {
+        "from_code": "PEK", "to_code": "SZX",
+        "flight_no": "HU7715", "dep_time": "20:45", "arr_time": "00:05",
+    }
+    app_mod.add_tasks_batch([{**base, "dates": ["2026-10-25"], "notify_email": "friend@example.com"}])
+    app_mod.add_tasks_batch([{**base, "dates": ["2026-10-25", "2026-11-01"]}])
+    saved = _read_tasks(app_env)[0]
+    assert app_mod.task_email_for(saved, "2026-10-25") == "friend@example.com,me@example.com"
+    assert app_mod.task_email_for(saved, "2026-11-01") == "me@example.com"
+    app_mod.add_tasks_batch([{**base, "dates": ["2026-10-25"], "notify_email": "other@example.com, ME@example.com"}])
+    saved = _read_tasks(app_env)[0]
+    assert app_mod.task_email_for(saved, "2026-10-25") == "friend@example.com,me@example.com,other@example.com"
+
+
+def test_return_day_keeps_every_outbound(app_env):
+    """同一个回程日期可以对应多个去程，后一次关注不会把前一个去程顶掉。"""
+    back = {
+        "from_code": "PEK", "to_code": "SZX", "dates": ["2026-10-25"],
+        "flight_no": "HU7715", "dep_time": "20:45", "arr_time": "00:05",
+    }
+    app_mod.add_tasks_batch([{
+        **back,
+        "round_pairs": {"2026-10-25": {"role": "back", "mate_date": "2026-10-24", "mate_flight": "HU7702"}},
+    }])
+    app_mod.add_tasks_batch([{
+        **back,
+        "round_pairs": {"2026-10-25": {"role": "back", "mate_date": "2026-10-23", "mate_flight": "HU7716"}},
+    }])
+    mates = _read_tasks(app_env)[0]["round_pairs"]["2026-10-25"]
+    assert [item["mate_flight"] for item in mates] == ["HU7702", "HU7716"]
+
+
+def test_round_pairs_saved_and_pruned(app_env):
+    """批量添加写入配对；删掉某一天后，那一天的配对一起消失。同一天再次写入会覆盖。"""
+    app_mod.add_tasks_batch([
+        {
+            "from_code": "SZX", "to_code": "PEK", "dates": ["2026-10-24", "2026-10-30"],
+            "flight_no": "HU7716", "dep_time": "21:10", "arr_time": "00:25",
+            "round_pairs": {
+                "2026-10-24": {"role": "out", "mate_date": "2026-10-25", "mate_flight": "hu7715"},
+                "2026-10-30": {"role": "out", "mate_date": "2026-10-31", "mate_flight": "HU7715"},
+                "2026-11-01": {"role": "out", "mate_date": "2026-11-02", "mate_flight": "HU7715"},
+            },
+        },
+        {
+            "from_code": "PEK", "to_code": "SZX", "dates": ["2026-10-25"],
+            "flight_no": "HU7715", "dep_time": "20:45", "arr_time": "00:05",
+            "round_pairs": {
+                "2026-10-25": {"role": "back", "mate_date": "2026-10-24", "mate_flight": "HU7716"},
+            },
+        },
+    ])
+    outbound = next(row for row in _read_tasks(app_env) if row["flight_no"] == "HU7716")
+    assert outbound["round_pairs"]["2026-10-24"] == {
+        "role": "out", "mate_date": "2026-10-25", "mate_flight": "HU7715",
+    }
+    assert "2026-11-01" not in outbound["round_pairs"]
+    app_mod.add_tasks_batch([{
+        "from_code": "SZX", "to_code": "PEK", "dates": ["2026-10-24"],
+        "flight_no": "HU7716", "dep_time": "21:10", "arr_time": "00:25",
+        "round_pairs": {
+            "2026-10-24": {"role": "out", "mate_date": "2026-10-26", "mate_flight": "HU7713"},
+        },
+    }])
+    outbound = next(row for row in _read_tasks(app_env) if row["flight_no"] == "HU7716")
+    assert outbound["round_pairs"]["2026-10-24"]["mate_flight"] == "HU7713"
+    assert "2026-10-30" in outbound["round_pairs"]
+    app_mod.update_tasks([outbound["id"]], {"dates": ["2026-10-24"]})
+    outbound = next(row for row in _read_tasks(app_env) if row["flight_no"] == "HU7716")
+    assert list(outbound["round_pairs"]) == ["2026-10-24"]
+
+
+def test_product_by_date_uses_the_season_flying_that_day():
+    """秋航季 666/2666、冬春季只有 2666 时，10/25 按当天的底表显示 2666。"""
+    from web_api import _build_task_rows
+
+    rows = _build_task_rows([{
+        "id": "hu7713",
+        "from_code": "PEK",
+        "to_code": "SZX",
+        "dates": ["2026-10-25"],
+        "flight_no": "HU7713",
+        "dep_time": "19:30",
+        "arr_time": "23:00",
+        "product": "666/2666",
+        "enabled": True,
+    }])
+    assert rows[0]["product_by_date"]["2026-10-25"] == "2666"
+    assert rows[0]["round_pairs"] == {}
 
 
 def test_daemon_task_tier_ok_multi(app_env):

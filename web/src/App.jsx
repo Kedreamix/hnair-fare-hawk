@@ -197,7 +197,17 @@ function recordsToMonitorGroups(recs, tierBlockRules, todayStr) {
     g.rows.push(r)
   }
   for (const g of groups) {
-    g.product = [...g.product].sort().join('/')
+    const live = g.rows.filter((row) => {
+      const ranges = Array.isArray(row.effective_dates) ? row.effective_dates : []
+      if (!ranges.length) return true
+      return ranges.some((pair) => String(pair?.[1] || '') >= todayStr)
+    })
+    const source = live.length ? live : g.rows
+    const product = new Set()
+    source.forEach((row) => {
+      String(row.product || '').split('/').forEach((part) => { if (part) product.add(part) })
+    })
+    g.product = [...product].sort().join('/')
     g.dates = filterTierDates(expandRecordDates(g.rows), g.product, tierBlockRules).filter((d) => d >= todayStr)
   }
   groups.sort((a, b) => String(a.dep_time).localeCompare(String(b.dep_time)) || String(a.flight_no).localeCompare(String(b.flight_no)))
@@ -261,7 +271,13 @@ function Overview({ data, onGo, onToggleStatus, onChanged, msg, onOpenDetail }) 
         </Space>
       ),
     },
-    { title: '日期', dataIndex: 'date', width: 110 },
+    {
+      title: '日期', dataIndex: 'date', width: 148,
+      render: (v) => {
+        const week = cnWeekday(v)
+        return week ? `${v}（${week}）` : (v || '—')
+      },
+    },
     {
       title: '档位', key: 'tiers', width: 130,
       render: (_, r) => {
@@ -493,6 +509,36 @@ function ReturnPickList({ groups, onToggle, onDates }) {
   })
 }
 
+function pairEntries(task, day) {
+  const raw = (task?.round_pairs || {})[day]
+  const items = Array.isArray(raw) ? raw : (raw ? [raw] : [])
+  return items.map((info) => {
+    if (!info || typeof info !== 'object') return null
+    const role = info.role
+    const mateDate = String(info.mate_date || '')
+    const mateFlight = String(info.mate_flight || '').toUpperCase()
+    if ((role !== 'out' && role !== 'back') || !mateDate || !mateFlight) return null
+    return { role, mateDate, mateFlight }
+  }).filter(Boolean)
+}
+
+function pairInfo(task, day) {
+  return pairEntries(task, day)[0] || null
+}
+
+function findMates(legs, task, day) {
+  return pairEntries(task, day).map((info) => {
+    const mate = (legs || []).find((other) => (
+      other !== task
+      && String(other.from_code) === String(task.to_code)
+      && String(other.to_code) === String(task.from_code)
+      && String(other.flight_no || '').toUpperCase() === info.mateFlight
+      && (other.dates || []).includes(info.mateDate)
+    ))
+    return mate ? { ...info, mate } : null
+  }).filter(Boolean)
+}
+
 function pairMonitorRows(tasks) {
   const pairKey = (t) => [t.from_code, t.to_code].sort().join('|')
   const byPair = new Map()
@@ -501,35 +547,25 @@ function pairMonitorRows(tasks) {
     if (!byPair.has(key)) byPair.set(key, [])
     byPair.get(key).push(i)
   })
-  const roundKeys = new Set()
+  const bothWays = new Set()
   for (const [key, idxs] of byPair) {
     const dirs = new Set(idxs.map((i) => `${tasks[i].from_code}>${tasks[i].to_code}`))
-    if (dirs.size >= 2) roundKeys.add(key)
+    if (dirs.size >= 2) bothWays.add(key)
   }
   const used = new Set()
   const rows = []
   tasks.forEach((t, i) => {
     if (used.has(i)) return
     const key = pairKey(t)
-    if (!roundKeys.has(key)) {
+    if (!bothWays.has(key)) {
       used.add(i)
-      rows.push({ key: `single-${(t.ids || [t.id]).join('-')}`, round: false, legs: [t] })
+      rows.push({ key: `single-${(t.ids || [t.id]).join('-')}`, bothWays: false, paired: false, legs: [t] })
       return
     }
     const members = byPair.get(key).map((j) => tasks[j])
     byPair.get(key).forEach((j) => used.add(j))
-    const earliest = [...members].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))[0]
-    const outDir = `${earliest.from_code}>${earliest.to_code}`
-    const legs = [
-      ...members.filter((m) => `${m.from_code}>${m.to_code}` === outDir),
-      ...members.filter((m) => `${m.from_code}>${m.to_code}` !== outDir),
-    ].map((m) => ({ ...m, leg: `${m.from_code}>${m.to_code}` === outDir ? 'out' : 'back' }))
-    legs.sort((a, b) => {
-      if (a.leg !== b.leg) return a.leg === 'out' ? -1 : 1
-      return String(a.dep_time || '').localeCompare(String(b.dep_time || ''))
-        || String(a.flight_no || '').localeCompare(String(b.flight_no || ''))
-    })
-    rows.push({ key: `round-${key}`, round: true, legs })
+    const paired = members.some((task) => (task.dates || []).some((day) => findMates(members, task, day).length))
+    rows.push({ key: `route-${key}`, bothWays: true, paired, legs: members })
   })
   return rows
 }
@@ -551,6 +587,28 @@ function mailSet(value) {
 
 function sameMail(a, b) {
   return mailSet(a) === mailSet(b)
+}
+
+function mailParts(value) {
+  const seen = new Set()
+  const out = []
+  String(value || '').split(/[,，;；\s]+/).forEach((part) => {
+    const addr = part.trim()
+    const key = addr.toLowerCase()
+    if (!addr.includes('@') || seen.has(key)) return
+    seen.add(key)
+    out.push(addr)
+  })
+  return out
+}
+
+function flightMailFallback(task, globalMail) {
+  return String(task?.notify_email || '').trim() || String(globalMail || '').trim()
+}
+
+function dayMailPayload(nextParts, task, globalMail) {
+  const fallback = flightMailFallback(task, globalMail)
+  return sameMail(nextParts.join(','), fallback) ? '' : nextParts.join(',')
 }
 
 function shownMail(task, day, globalMail) {
@@ -582,38 +640,155 @@ function monitorDayLabel(iso) {
   const day = String(iso || '')
   const md = day.slice(5).replace('-', '/')
   const week = cnWeekday(day)
-  return week ? `${md} ${week}` : md
+  return week ? `${md}（${week}）` : md
 }
 
-function monitorDateGroups(legs, round) {
-  const days = [...new Set((legs || []).flatMap((leg) => leg.dates || []))].filter(Boolean).sort()
-  const clusters = []
-  days.forEach((day) => {
-    const last = clusters[clusters.length - 1]
-    const gap = last ? dayjs(day).startOf('day').diff(dayjs(last[last.length - 1]).startOf('day'), 'day') : 99
-    // 单程每个出发日单独列。相邻两天不是一趟住宿，不合成「2天1晚」。
-    if (!round || !last || gap > 4) clusters.push([day])
-    else last.push(day)
+function pushRoundGroup(groups, used, taskKey, outTask, outDay, backTask, backDay) {
+  const mark = `${taskKey(outTask)}|${outDay}|${String(outTask.flight_no || '').toUpperCase()}`
+  const groupKey = `pair-${outDay}-${backDay}-${outTask.flight_no || ''}-${backTask.flight_no || ''}`
+  // 同一个回程日期可以同时属于多组往返，所以回程被用过时不拦截。去程这一天只进一组。
+  if (used.has(mark) || groups.some((group) => group.key === groupKey)) return
+  used.add(mark)
+  used.add(`${taskKey(outTask)}|${outDay}`)
+  used.add(`${taskKey(backTask)}|${backDay}`)
+  const nights = dayjs(backDay).startOf('day').diff(dayjs(outDay).startOf('day'), 'day')
+  groups.push({
+    key: groupKey,
+    sort: outDay,
+    label: `${monitorDayLabel(outDay)} – ${monitorDayLabel(backDay)}`,
+    stay: nights > 0 ? `${nights + 1}天${nights}晚` : '',
+    legs: [
+      { task: { ...outTask, leg: 'out' }, dates: [outDay] },
+      { task: { ...backTask, leg: 'back' }, dates: [backDay] },
+    ],
+    roundReq: {
+      round: true,
+      outTask,
+      backTask,
+      from: outTask.from_city || outTask.from_code,
+      to: outTask.to_city || outTask.to_code,
+      outDate: outDay,
+      backDate: backDay,
+      outFlight: outTask.flight_no || '',
+      backFlight: backTask.flight_no || '',
+      date: outDay,
+    },
   })
-  const groups = clusters.map((dates) => {
-    const nights = dayjs(dates[dates.length - 1]).startOf('day').diff(dayjs(dates[0]).startOf('day'), 'day')
-    const span = dates.length === 1
-      ? monitorDayLabel(dates[0])
-      : `${monitorDayLabel(dates[0])} – ${monitorDayLabel(dates[dates.length - 1])}`
-    const set = new Set(dates)
-    return {
-      key: dates[0],
-      label: span,
-      stay: round && nights > 0 ? `${nights + 1}天${nights}晚` : '',
-      legs: (legs || []).filter((leg) => (leg.dates || []).some((day) => set.has(day))).map((leg) => ({
-        task: leg,
-        dates: (leg.dates || []).filter((day) => set.has(day)),
-      })),
+}
+
+function monitorTripGroups(legs) {
+  const taskKey = (task) => (task.ids || [task.id]).join('-')
+  const used = new Set()
+  const groups = []
+  ;(legs || []).forEach((task) => {
+    ;(task.dates || []).forEach((day) => {
+      findMates(legs, task, day).forEach((found) => {
+        if (found.role !== 'out') return
+        pushRoundGroup(groups, used, taskKey, task, day, found.mate, found.mateDate)
+      })
+    })
+  })
+  ;(legs || []).forEach((task) => {
+    ;(task.dates || []).forEach((day) => {
+      findMates(legs, task, day).forEach((found) => {
+        if (found.role !== 'back') return
+        pushRoundGroup(groups, used, taskKey, found.mate, found.mateDate, task, day)
+      })
+    })
+  })
+  ;(legs || []).forEach((task) => {
+    ;(task.dates || []).forEach((day) => {
+      const mark = `${taskKey(task)}|${day}`
+      if (used.has(mark)) return
+      used.add(mark)
+      groups.push({
+        key: `single-${taskKey(task)}-${day}`,
+        sort: day,
+        label: monitorDayLabel(day),
+        stay: '',
+        legs: [{ task, dates: [day] }],
+        roundReq: null,
+      })
+    })
+  })
+  ;(legs || []).filter((task) => !(task.dates || []).length).forEach((task) => {
+    groups.push({
+      key: `none-${taskKey(task)}`,
+      sort: '9999-99-99',
+      label: '未选日期',
+      stay: '',
+      legs: [{ task, dates: [] }],
+      roundReq: null,
+    })
+  })
+  return mergeSharedReturns(groups)
+}
+
+function mergeSharedReturns(groups) {
+  const order = []
+  const hosts = new Map()
+  ;(groups || []).forEach((group) => {
+    const back = group.roundReq ? group.legs[group.legs.length - 1] : null
+    const backDay = back?.dates?.[0]
+    if (!backDay) {
+      order.push(group)
+      return
+    }
+    const taskIds = (back.task.ids || [back.task.id]).join('-')
+    const key = `${backDay}|${String(back.task.flight_no || '').toUpperCase()}|${taskIds}`
+    const host = hosts.get(key)
+    if (!host) {
+      hosts.set(key, group)
+      order.push(group)
+      return
+    }
+    host.legs.splice(host.legs.length - 1, 0, group.legs[0])
+  })
+  order.forEach((group) => {
+    if (!group.roundReq || group.legs.length < 3) return
+    const back = group.legs[group.legs.length - 1]
+    const backDay = back.dates[0]
+    const outs = group.legs.slice(0, -1).sort((a, b) => (
+      a.dates[0].localeCompare(b.dates[0]) || String(a.task.dep_time || '').localeCompare(String(b.task.dep_time || ''))
+    ))
+    outs.forEach((leg, index) => {
+      const nights = dayjs(backDay).startOf('day').diff(dayjs(leg.dates[0]).startOf('day'), 'day')
+      leg.task = {
+        ...leg.task,
+        leg: 'out',
+        outNo: index + 1,
+        legStay: nights > 0 ? `${nights + 1}天${nights}晚` : '',
+      }
+    })
+    const first = outs[0]
+    group.legs = [...outs, back]
+    group.sort = first.dates[0]
+    group.stay = ''
+    group.label = `${outs.map((leg) => monitorDayLabel(leg.dates[0])).join('、')} – ${monitorDayLabel(backDay)}`
+    group.key = `weekend-${backDay}-${back.task.flight_no || ''}-${outs.map((leg) => leg.dates[0]).join('-')}`
+    group.roundReq = {
+      ...group.roundReq,
+      outTask: first.task,
+      outDate: first.dates[0],
+      outFlight: first.task.flight_no || '',
+      date: first.dates[0],
     }
   })
-  const undated = (legs || []).filter((leg) => !(leg.dates || []).length)
-  if (undated.length) groups.push({ key: 'none', label: '未选日期', stay: '', legs: undated.map((leg) => ({ task: leg, dates: [] })) })
-  return groups
+  order.sort((a, b) => a.sort.localeCompare(b.sort) || Number(Boolean(b.roundReq)) - Number(Boolean(a.roundReq)))
+  return order
+}
+
+function matchRoundTrips(outs, backs) {
+  const used = new Set()
+  const orderedBacks = [...backs].sort((a, b) => a.day.localeCompare(b.day) || String(a.dep || '').localeCompare(String(b.dep || '')))
+  const pairs = []
+  ;[...outs].sort((a, b) => a.day.localeCompare(b.day)).forEach((out) => {
+    const index = orderedBacks.findIndex((back, i) => !used.has(i) && back.day > out.day)
+    if (index < 0) return
+    used.add(index)
+    pairs.push({ out, back: orderedBacks[index] })
+  })
+  return pairs
 }
 
 async function loadFlightDates(t) {
@@ -641,36 +816,6 @@ function taskDetailRequest(task, day) {
   }
 }
 
-function roundDetailRequest(group) {
-  let best = null
-  for (const out of group.legs.filter((leg) => leg.task.leg !== 'back')) {
-    for (const outDay of out.dates) {
-      for (const back of group.legs.filter((leg) => leg.task.leg === 'back')) {
-        for (const backDay of back.dates) {
-          const gap = dayjs(backDay).startOf('day').diff(dayjs(outDay).startOf('day'), 'day')
-          if (gap <= 0) continue
-          if (!best || outDay < best.outDay || (outDay === best.outDay && gap < best.gap)) {
-            best = { out: out.task, outDay, back: back.task, backDay, gap }
-          }
-        }
-      }
-    }
-  }
-  if (!best) return null
-  return {
-    round: true,
-    outTask: best.out,
-    backTask: best.back,
-    from: best.out.from_city || best.out.from_code,
-    to: best.out.to_city || best.out.to_code,
-    outDate: best.outDay,
-    backDate: best.backDay,
-    outFlight: best.out.flight_no || '',
-    backFlight: best.back.flight_no || '',
-    date: best.outDay,
-  }
-}
-
 function listsMatch(rows, pick) {
   if (!rows.length) return { same: true, value: undefined }
   const key = (value) => JSON.stringify(value ?? null)
@@ -688,11 +833,200 @@ function TaskPowerButton({ on, title, onClick }) {
   )
 }
 
+function DayMailEditor({ task, day, globalMail, msg, onSave }) {
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  if (!day) return null
+  const fallback = flightMailFallback(task, globalMail) || globalMail
+  const explicit = mailParts(emailForDay(task, day))
+  const usingDefault = !explicit.length || sameMail(explicit.join(','), fallback)
+  const base = usingDefault ? [] : explicit
+  const chips = base
+  const defaultHint = !fallback
+    ? '通知管理里还没有默认收件人'
+    : usingDefault
+      ? `不填就发给默认收件人 ${fallback}`
+      : '再添加会加在现有收件人后面'
+
+  const write = async (nextParts, note) => {
+    setBusy(true)
+    try {
+      await onSave(task, day, dayMailPayload(nextParts, task, globalMail))
+      msg.success(note)
+      setDraft('')
+      setOpen(false)
+    } catch (e) {
+      msg.error(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const addRecipient = () => {
+    const addr = draft.trim()
+    if (mailParts(addr).length !== 1 || /[,，;；\s]/.test(addr)) {
+      msg.error('一次加一个邮箱')
+      return
+    }
+    const known = base.some((item) => item.toLowerCase() === addr.toLowerCase())
+    const alreadyDefault = usingDefault && mailParts(fallback).some((item) => item.toLowerCase() === addr.toLowerCase())
+    if (known || alreadyDefault) {
+      msg.warning(alreadyDefault ? '不填就会发给这个默认收件人' : '这一天已经有这个收件人')
+      return
+    }
+    write([...base, addr], `已把 ${addr} 加到 ${monitorDayLabel(day)}`)
+  }
+
+  const removeRecipient = (addr) => {
+    const rest = base.filter((item) => item.toLowerCase() !== addr.toLowerCase())
+    if (rest.length) {
+      write(rest, `已从 ${monitorDayLabel(day)} 去掉 ${addr}`)
+      return
+    }
+    write([], `已去掉 ${addr}，${monitorDayLabel(day)} 改回默认收件人`)
+  }
+
+  return (
+    <>
+      {chips.map((addr) => (
+        <Tag
+          key={addr}
+          color="gold"
+          closable={!busy}
+          style={{ marginInlineEnd: 0 }}
+          onClose={(event) => {
+            event.preventDefault()
+            removeRecipient(addr)
+          }}
+        >
+          {addr}
+        </Tag>
+      ))}
+      <Popover
+        open={open}
+        trigger="click"
+        title={`添加到 ${monitorDayLabel(day)}`}
+        onOpenChange={(next) => { if (!busy) setOpen(next) }}
+        content={(
+          <div className="mail-add-pop">
+            <div className="mail-add-hint">{defaultHint}</div>
+            <Space.Compact>
+            <Input
+              size="small"
+              style={{ width: 220 }}
+              placeholder="name@example.com"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onPressEnter={addRecipient}
+            />
+            <Button size="small" type="primary" loading={busy} onClick={addRecipient}>添加</Button>
+            </Space.Compact>
+          </div>
+        )}
+      >
+        <Button size="small" type="link" className="task-mail-add">添加</Button>
+      </Popover>
+    </>
+  )
+}
+
+function MailField({ value, onChange, fallback, msg, disabled }) {
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState('')
+  const current = mailParts(value)
+  const usingDefault = !current.length || sameMail(current.join(','), fallback)
+  const base = usingDefault ? [] : current
+  const shown = usingDefault ? [] : current
+  const commit = (next) => {
+    onChange?.(sameMail(next.join(','), fallback) ? '' : next.join(','))
+  }
+  const addRecipient = () => {
+    const addr = draft.trim()
+    if (mailParts(addr).length !== 1 || /[,，;；\s]/.test(addr)) {
+      msg.error('一次加一个邮箱')
+      return
+    }
+    const known = base.some((item) => item.toLowerCase() === addr.toLowerCase())
+    const alreadyDefault = usingDefault && mailParts(fallback).some((item) => item.toLowerCase() === addr.toLowerCase())
+    if (known || alreadyDefault) {
+      msg.warning(alreadyDefault ? '不填就会发给这个默认收件人' : '已经有这个收件人')
+      return
+    }
+    commit([...base, addr])
+    setDraft('')
+    setOpen(false)
+  }
+  const removeRecipient = (addr) => {
+    const base = current.length ? current : mailParts(fallback)
+    const rest = base.filter((item) => item.toLowerCase() !== addr.toLowerCase())
+    if (!rest.length) {
+      if (!mailParts(fallback).length || sameMail(base.join(','), fallback)) {
+        msg.warning(fallback ? `这是默认收件人 ${fallback}，不能删掉` : '至少留一个收件人')
+        return
+      }
+      commit(mailParts(fallback))
+      return
+    }
+    commit(rest)
+  }
+  return (
+    <div className="mail-field">
+      {shown.map((addr) => (
+        <Tag
+          key={addr}
+          color="gold"
+          closable={!disabled}
+          style={{ marginInlineEnd: 0 }}
+          onClose={(event) => {
+            event.preventDefault()
+            if (!disabled) removeRecipient(addr)
+          }}
+        >
+          {addr}
+        </Tag>
+      ))}
+      <Popover
+        open={open && !disabled}
+        trigger="click"
+        title="添加收件人"
+        onOpenChange={(next) => { if (!disabled) setOpen(next) }}
+        content={(
+          <div className="mail-add-pop">
+            <div className="mail-add-hint">{!fallback ? '通知管理里还没有默认收件人' : usingDefault ? `不填就发给默认收件人 ${fallback}` : '再添加会加在现有收件人后面'}</div>
+            <Space.Compact>
+            <Input
+              size="small"
+              style={{ width: 220 }}
+              placeholder="name@example.com"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onPressEnter={addRecipient}
+            />
+            <Button size="small" type="primary" onClick={addRecipient}>添加</Button>
+            </Space.Compact>
+          </div>
+        )}
+      >
+        <Button size="small" type="link" className="task-mail-add" disabled={disabled}>添加</Button>
+      </Popover>
+    </div>
+  )
+}
+
 function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
   const tasks = data.tasks || []
   const globalMail = String(data?.config?.notify_channels?.email?.receiver || '').trim()
   // 「只能查/显示当天及以后」：过去日期从所有可选池剔除（编辑弹窗日期选项、档位联动、兜底池）
   const todayStr = dayjs().format('YYYY-MM-DD')
+
+  const saveDayMail = async (task, day, notifyEmail) => {
+    await api.updateTasks(task.ids || [task.id], {
+      notify_email: notifyEmail,
+      notify_email_dates: [day],
+    })
+    onChanged()
+  }
 
   const toggleEnabled = async (t, enabled, dates) => {
     try {
@@ -792,10 +1126,18 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
     const backExtra = v.mail_scope === 'flight'
       ? { ...shared, notify_email: mail }
       : { ...shared, notify_email: mail, notify_email_dates: [v.backDate] }
+    const outFlight = req.outTask.flight_no
+    const backFlight = req.backTask.flight_no
+    const outPayload = { dates: nextDates(req.outTask, req.outDate, v.outDate), ...outExtra }
+    const backPayload = { dates: nextDates(req.backTask, req.backDate, v.backDate), ...backExtra }
+    if (outFlight && backFlight) {
+      outPayload.round_pairs = { [v.outDate]: { role: 'out', mate_date: v.backDate, mate_flight: backFlight } }
+      backPayload.round_pairs = { [v.backDate]: { role: 'back', mate_date: v.outDate, mate_flight: outFlight } }
+    }
     setPairBusy(true)
     try {
-      await api.updateTasks(req.outTask.ids || [req.outTask.id], { dates: nextDates(req.outTask, req.outDate, v.outDate), ...outExtra })
-      await api.updateTasks(req.backTask.ids || [req.backTask.id], { dates: nextDates(req.backTask, req.backDate, v.backDate), ...backExtra })
+      await api.updateTasks(req.outTask.ids || [req.outTask.id], outPayload)
+      await api.updateTasks(req.backTask.ids || [req.backTask.id], backPayload)
       msg.success('往返监控已更新')
       setPairEdit(null)
       onChanged()
@@ -889,6 +1231,25 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
   const confirmReturn = async () => {
     const source = returnSource
     if (!source) return
+    const outDays = (source.dates || []).filter((day) => day >= todayStr && !pairInfo(source, day))
+    const backChoices = returnGroups
+      .filter((g) => g.checked && (g.selected || []).length)
+      .flatMap((g) => (g.selected || []).map((day) => ({
+        group: g,
+        day,
+        flight: g.rows[0]?.flight_no || g.flight_no || '',
+        dep: g.dep_time || '',
+      })))
+    const linked = matchRoundTrips(
+      outDays.map((day) => ({ day, flight: source.flight_no || '' })),
+      backChoices,
+    )
+    const pairsByGroup = new Map()
+    linked.forEach(({ out, back }) => {
+      const current = pairsByGroup.get(back.group) || {}
+      current[back.day] = { role: 'back', mate_date: out.day, mate_flight: out.flight }
+      pairsByGroup.set(back.group, current)
+    })
     const items = returnGroups
       .filter((g) => g.checked && (g.selected || []).length)
       .map((g) => {
@@ -903,6 +1264,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
           dep_time: g.dep_time || '',
           arr_time: g.arr_time || '',
         }
+        if (pairsByGroup.has(g)) item.round_pairs = pairsByGroup.get(g)
         if (Number(source.min_seats) >= 2) item.min_seats = source.min_seats
         if (source.cabins && source.cabins.length) item.cabins = source.cabins
         return item
@@ -914,6 +1276,13 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
     setReturnBusy(true)
     try {
       const r = await api.addTasksBatch(items)
+      if (linked.length) {
+        const outboundPairs = {}
+        linked.forEach(({ out, back }) => {
+          outboundPairs[out.day] = { role: 'out', mate_date: back.day, mate_flight: back.flight }
+        })
+        await api.updateTasks(source.ids || [source.id], { round_pairs: outboundPairs })
+      }
       msg.success(r.message || '回程监控已创建')
       setReturnSource(null)
       if (onChanged) onChanged()
@@ -1108,14 +1477,24 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
     return `${shown.join('、')}${rest ? ` +${rest}` : ''}`
   }
   const routeTitle = (row) => {
-    const lead = row.legs.find((leg) => !row.round || leg.leg === 'out') || row.legs[0]
+    const trip = monitorTripGroups(row.legs).find((group) => group.roundReq)
+    const lead = trip?.roundReq?.outTask || row.legs[0]
     const from = cityWithProvince(lead.from_city || lead.from_code)
     const to = cityWithProvince(lead.to_city || lead.to_code)
-    return row.round ? `${from} ↔ ${to}` : `${from} → ${to}`
+    return row.bothWays ? `${from} ↔ ${to}` : `${from} → ${to}`
   }
 
   return (
     <div>
+      {!globalMail ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="通知管理里还没设默认收件人，所以每条都会显示邮箱"
+          action={<Button size="small" type="link" onClick={() => onGo('notify')}>去设置</Button>}
+        />
+      ) : null}
       <Card
         className="task-board"
         title={`监控任务 · ${tasks.length} 班 · ${taskRows.length} 条航线`}
@@ -1140,7 +1519,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
               <section key={row.key} className="task-group">
                 <header className="task-group-head">
                   <b>{routeTitle(row)}</b>
-                  <Tag color={row.round ? 'green' : 'default'} style={{ marginInlineEnd: 0 }}>{row.round ? '往返' : '单程'}</Tag>
+                  <Tag color={row.paired ? 'green' : 'default'} style={{ marginInlineEnd: 0 }}>{row.paired ? '往返' : '单程'}</Tag>
                   <span>{row.legs.length} 班</span>
                   {mailSummary.kinds.length ? (
                     <Tooltip title={mailSummary.lines.map((line) => <div key={line}>{line}</div>)}>
@@ -1175,10 +1554,11 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                     </div>
                   </div>
                 </header>
-                {monitorDateGroups(row.legs, row.round).map((group) => {
-                  const roundReq = row.round ? roundDetailRequest(group) : null
+                {monitorTripGroups(row.legs).map((group) => {
+                  const roundReq = group.roundReq
                   const pairState = roundReq ? groupState(group) : 'on'
                   const pairOn = pairState !== 'off'
+                  const outCount = group.legs.filter((leg) => leg.task.leg === 'out').length
                   return (
                   <div key={group.key}>
                     <div className="task-date">
@@ -1189,7 +1569,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                           pairState === 'on' ? <Tag color="green" style={{ marginInlineEnd: 0 }}>往返监控中</Tag>
                             : pairState === 'off' ? <Tag style={{ marginInlineEnd: 0 }}>往返已停止</Tag>
                               : <Tag color="orange" style={{ marginInlineEnd: 0 }}>部分停止</Tag>
-                        ) : null}
+                        ) : row.bothWays ? <Tag style={{ marginInlineEnd: 0 }}>单程</Tag> : null}
                       </div>
                       {roundReq ? (
                         <div className="task-flight-ops">
@@ -1198,7 +1578,9 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                           </div>
                           <TaskPowerButton
                             on={pairOn}
-                            title={pairOn ? '停止监控这组往返（去程、回程一起），其他日期不受影响' : '重新监控这组往返（去程、回程一起）'}
+                            title={pairOn
+                              ? (outCount > 1 ? '停止这个周末的全部去程和回程，其他日期不受影响' : '停止监控这组往返（去程、回程一起），其他日期不受影响')
+                              : (outCount > 1 ? '重新监控这个周末的全部去程和回程' : '重新监控这组往返（去程、回程一起）')}
                             onClick={() => toggleGroup(group, !pairOn)}
                           />
                           <div className="task-ops-icon">
@@ -1209,7 +1591,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                           <div className="task-ops-icon">
                             <Popconfirm
                               title={`删除 ${group.label} 这组往返`}
-                              description="去程、回程这几天一起删掉，其他日期继续留在列表里。"
+                              description={outCount > 1 ? '这几套去程和同一个回程一起删掉，其他日期继续留在列表里。' : '去程、回程这几天一起删掉，其他日期继续留在列表里。'}
                               okText="删除"
                               cancelText="取消"
                               okButtonProps={{ danger: true }}
@@ -1227,23 +1609,27 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                   const shownDates = legDates.length ? legDates : [null]
                   return shownDates.map((day) => {
                   const dates = day ? [day] : []
-                  const products = String(t.product || '').split('/').map((s) => s.trim()).filter(Boolean)
+                  const products = String((day && t.product_by_date && t.product_by_date[day]) || t.product || '').split('/').map((s) => s.trim()).filter(Boolean)
                   const paused = new Set(t.disabled_dates || [])
                   const rowOn = day ? !paused.has(day) : t.enabled !== false
                   const seatBits = []
                   if (Number(t.min_seats || 1) > 1) seatBits.push(`≥${t.min_seats}张`)
                   if (t.cabins && t.cabins.length) seatBits.push(t.cabins.join('/'))
-                  const dayMail = day ? shownMail(t, day, globalMail) : null
                   return (
                     <div key={`${group.key}-${legKey(t)}-${day || 'none'}`} className={`task-flight${rowOn ? '' : ' is-paused'}`}>
                       <div className="task-flight-main">
                         <div className="task-flight-line">
-                          {row.round ? <Tag color={t.leg === 'back' ? 'blue' : 'gold'} style={{ marginInlineEnd: 0 }}>{t.leg === 'back' ? '回程' : '去程'}</Tag> : null}
+                          {t.leg === 'out' || t.leg === 'back' ? (
+                            <Tag color={t.leg === 'back' ? 'blue' : 'gold'} style={{ marginInlineEnd: 0 }}>{t.leg === 'back' ? '回程' : (t.outNo ? `去程${t.outNo}` : '去程')}</Tag>
+                          ) : row.bothWays ? (
+                            <Tag style={{ marginInlineEnd: 0 }}>{t.from_city || t.from_code}→{t.to_city || t.to_code}</Tag>
+                          ) : null}
                           <span className="mono task-flight-no">{t.flight_no || '—'}</span>
                           <span className="mono task-flight-time">{t.dep_time || '--:--'} → {t.arr_time || '--:--'}</span>
                           <Tooltip title={(t.dates || []).join('、') || '未选日期'}>
                             <span className="task-flight-dates">{shortDates(dates)}</span>
                           </Tooltip>
+                          {t.legStay ? <span className="task-flight-dates">{t.legStay}</span> : null}
                         </div>
                         <div className="task-flight-meta">
                           {products.map((p) => <Tag key={p} color={p === '666' ? 'gold' : 'purple'} style={{ marginInlineEnd: 0 }}>{p}</Tag>)}
@@ -1252,9 +1638,7 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                           {(t.tiers || []).map((p) => <Tag key={p} style={{ marginInlineEnd: 0 }}>提醒 {p}</Tag>)}
                           {seatBits.map((bit) => <Tag key={bit} color="blue" style={{ marginInlineEnd: 0 }}>{bit}</Tag>)}
                           {stopTag(t)}
-                          {dayMail?.custom ? (
-                            <Tag color="gold" style={{ marginInlineEnd: 0 }}>邮件 {dayMail.addr}</Tag>
-                          ) : null}
+                          <DayMailEditor task={t} day={day} globalMail={globalMail} msg={msg} onSave={saveDayMail} />
                           {stopDetail(t) ? <span className="task-flight-dates">{stopDetail(t)}</span> : null}
                         </div>
                       </div>
@@ -1401,16 +1785,16 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
           <Form.Item
             name="notify_email"
             label="邮件收件人"
-            extra={globalMail ? `留空发给默认收件人 ${globalMail}。多个邮箱用逗号分开。` : '留空就用通知管理里的收件人。多个邮箱用逗号分开。'}
+            extra={globalMail ? `不填就发给默认收件人 ${globalMail}。填了就只发给填上的人。` : '不填就用通知管理里的收件人。填了就只发给填上的人。'}
             rules={[{
               validator: (_, value) => {
                 const parts = String(value || '').split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean)
-                if (parts.some((part) => !part.includes('@'))) return Promise.reject(new Error('收件人要写成邮箱，多个用逗号分开'))
+                if (parts.some((part) => !part.includes('@'))) return Promise.reject(new Error('收件人要写成邮箱'))
                 return Promise.resolve()
               },
             }]}
           >
-            <Input disabled={!routeUnifyMail} placeholder={globalMail ? `留空发给 ${globalMail}` : 'name@example.com'} />
+            <MailField fallback={globalMail} msg={msg} disabled={!routeUnifyMail} />
           </Form.Item>
         </Form>
       </Modal>
@@ -1507,22 +1891,24 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
               const flightMail = String(editRow?.notify_email || '').trim()
               const blankTo = editMailScope === 'flight' ? globalMail : (flightMail || globalMail)
               return blankTo
-                ? `留空发给默认收件人 ${blankTo}。多个邮箱用逗号分开。`
-                : '留空就用通知管理里的收件人。多个邮箱用逗号分开。'
+                ? `不填就发给默认收件人 ${blankTo}。填了就只发给填上的人。`
+                : '不填就用通知管理里的收件人。填了就只发给填上的人。'
             })()}
             rules={[{
               validator: (_, value) => {
                 const parts = String(value || '').split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean)
-                if (parts.some((part) => !part.includes('@'))) return Promise.reject(new Error('收件人要写成邮箱，多个用逗号分开'))
+                if (parts.some((part) => !part.includes('@'))) return Promise.reject(new Error('收件人要写成邮箱'))
                 return Promise.resolve()
               },
             }]}
           >
-            <Input placeholder={(() => {
-              const flightMail = String(editRow?.notify_email || '').trim()
-              const blankTo = editMailScope === 'flight' ? globalMail : (flightMail || globalMail)
-              return blankTo ? `留空发给 ${blankTo}` : 'name@example.com, other@example.com'
-            })()} />
+            <MailField
+              msg={msg}
+              fallback={(() => {
+                const flightMail = String(editRow?.notify_email || '').trim()
+                return editMailScope === 'flight' ? globalMail : (flightMail || globalMail)
+              })()}
+            />
           </Form.Item>
           <Form.Item name="mail_scope" label="收件人改动范围">
             <Radio.Group>
@@ -1628,18 +2014,22 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                 ? `去程 ${outMail}，回程 ${backMail}`
                 : (outMail || backMail)
               return blankTo
-                ? `留空发给默认收件人 ${blankTo}。多个邮箱用逗号分开。`
-                : '留空就用通知管理里的收件人。多个邮箱用逗号分开。'
+                ? `不填就发给默认收件人 ${blankTo}。填了就只发给填上的人。`
+                : '不填就用通知管理里的收件人。填了就只发给填上的人。'
             })()}
             rules={[{
               validator: (_, value) => {
                 const parts = String(value || '').split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean)
-                if (parts.some((part) => !part.includes('@'))) return Promise.reject(new Error('收件人要写成邮箱，多个用逗号分开'))
+                if (parts.some((part) => !part.includes('@'))) return Promise.reject(new Error('收件人要写成邮箱'))
                 return Promise.resolve()
               },
             }]}
           >
-            <Input placeholder={globalMail ? `留空发给 ${globalMail}` : 'name@example.com, other@example.com'} />
+            <MailField msg={msg} fallback={(() => {
+              const outMail = String(pairEdit?.req?.outTask?.notify_email || '').trim() || globalMail
+              const backMail = String(pairEdit?.req?.backTask?.notify_email || '').trim() || globalMail
+              return sameMail(outMail, backMail) ? outMail : ''
+            })()} />
           </Form.Item>
           <Form.Item name="mail_scope" label="收件人改动范围">
             <Radio.Group>
@@ -3195,38 +3585,113 @@ function OriginField({ value, onOpen, onChange }) {
 
 function DateStrip({ mode, date, onPick, days = 30 }) {
   const ref = useRef(null)
+  const [edge, setEdge] = useState({ left: true, right: false })
   const start = dayjs().startOf('day')
   const list = Array.from({ length: days }, (_, i) => start.add(i, 'day'))
   const picked = mode === 'single' && date ? date.format('YYYY-MM-DD') : ''
+  const syncEdge = () => {
+    const box = ref.current
+    if (!box) return
+    setEdge({
+      left: box.scrollLeft <= 2,
+      right: box.scrollLeft + box.clientWidth >= box.scrollWidth - 2,
+    })
+  }
+  useEffect(() => {
+    const box = ref.current
+    if (!box) return undefined
+    let drag = null
+    const onWheel = (event) => {
+      if (box.scrollWidth <= box.clientWidth + 2) return
+      if (Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
+      event.preventDefault()
+      box.scrollLeft += event.deltaY
+    }
+    const onDown = (event) => {
+      if (event.button !== 0) return
+      drag = { x: event.clientX, left: box.scrollLeft, moved: 0, active: true }
+    }
+    const onMove = (event) => {
+      if (!drag?.active) return
+      const dx = event.clientX - drag.x
+      if (Math.abs(dx) > 4) {
+        drag.moved = dx
+        box.classList.add('is-dragging')
+      }
+      if (drag.moved) box.scrollLeft = drag.left - dx
+    }
+    const onUp = () => {
+      if (!drag?.active) return
+      drag.active = false
+      box.classList.remove('is-dragging')
+    }
+    const onClick = (event) => {
+      if (!drag || Math.abs(drag.moved) <= 6) return
+      event.preventDefault()
+      event.stopPropagation()
+      drag = null
+    }
+    box.addEventListener('wheel', onWheel, { passive: false })
+    box.addEventListener('scroll', syncEdge, { passive: true })
+    box.addEventListener('pointerdown', onDown)
+    box.addEventListener('click', onClick, true)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    const observer = new ResizeObserver(syncEdge)
+    observer.observe(box)
+    syncEdge()
+    return () => {
+      box.removeEventListener('wheel', onWheel)
+      box.removeEventListener('scroll', syncEdge)
+      box.removeEventListener('pointerdown', onDown)
+      box.removeEventListener('click', onClick, true)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      observer.disconnect()
+    }
+  }, [])
   useEffect(() => {
     const box = ref.current
     const node = box?.querySelector('.date-strip-day.is-on')
     if (box && node) box.scrollTo({ left: node.offsetLeft - box.clientWidth / 2 + node.clientWidth / 2, behavior: 'smooth' })
   }, [picked])
+  const nudge = (dir) => {
+    const box = ref.current
+    if (!box) return
+    box.scrollBy({ left: dir * Math.max(180, box.clientWidth * 0.8), behavior: 'smooth' })
+  }
   return (
-    <div className="date-strip" ref={ref}>
-      <button type="button" className={`date-strip-day is-any${mode === 'none' ? ' is-on' : ''}`} onClick={() => onPick('none')}>
-        <span className="date-strip-week">日期</span>
-        <span className="date-strip-num">不限</span>
-        <span className="date-strip-md">看全部班期</span>
+    <div className="date-strip-wrap">
+      <button type="button" className="date-strip-nav" aria-label="往前看日期" disabled={edge.left} onClick={() => nudge(-1)}>
+        <ChevronLeftIcon size={16} />
       </button>
-      {list.map((d) => {
-        const key = d.format('YYYY-MM-DD')
-        const dow = d.day()
-        const tone = dow === 0 || dow === 6 ? ' is-weekend' : dow === 5 ? ' is-fri' : ''
-        const week = d.isSame(start, 'day') ? '今天' : d.isSame(start.add(1, 'day'), 'day') ? '明天' : dow === 0 || dow === 6 ? '周末' : cnWeekday(key)
-        return (
-          <button type="button" key={key} className={`date-strip-day${tone}${picked === key ? ' is-on' : ''}`} onClick={() => onPick('single', d)}>
-            <span className="date-strip-week">{week}</span>
-            <span className="date-strip-num">{d.date()}</span>
-            <span className="date-strip-md">{d.format('M/D')}</span>
-          </button>
-        )
-      })}
-      <button type="button" className={`date-strip-day is-any${mode === 'range' ? ' is-on' : ''}`} onClick={() => onPick('range')}>
-        <span className="date-strip-week">按区间</span>
-        <span className="date-strip-num">区间</span>
-        <span className="date-strip-md">选一段日期</span>
+      <div className="date-strip" ref={ref}>
+        <button type="button" className={`date-strip-day is-any${mode === 'none' ? ' is-on' : ''}`} onClick={() => onPick('none')}>
+          <span className="date-strip-week">日期</span>
+          <span className="date-strip-num">不限</span>
+          <span className="date-strip-md">看全部班期</span>
+        </button>
+        {list.map((d) => {
+          const key = d.format('YYYY-MM-DD')
+          const dow = d.day()
+          const tone = dow === 0 || dow === 6 ? ' is-weekend' : dow === 5 ? ' is-fri' : ''
+          const week = d.isSame(start, 'day') ? '今天' : d.isSame(start.add(1, 'day'), 'day') ? '明天' : dow === 0 || dow === 6 ? '周末' : cnWeekday(key)
+          return (
+            <button type="button" key={key} className={`date-strip-day${tone}${picked === key ? ' is-on' : ''}`} onClick={() => onPick('single', d)}>
+              <span className="date-strip-week">{week}</span>
+              <span className="date-strip-num">{d.date()}</span>
+              <span className="date-strip-md">{d.format('M/D')}</span>
+            </button>
+          )
+        })}
+        <button type="button" className={`date-strip-day is-any${mode === 'range' ? ' is-on' : ''}`} onClick={() => onPick('range')}>
+          <span className="date-strip-week">按区间</span>
+          <span className="date-strip-num">区间</span>
+          <span className="date-strip-md">选一段日期</span>
+        </button>
+      </div>
+      <button type="button" className="date-strip-nav" aria-label="往后看日期" disabled={edge.right} onClick={() => nudge(1)}>
+        <ChevronRightIcon size={16} />
       </button>
     </div>
   )
@@ -5214,7 +5679,7 @@ function removeFlightRecent(item) {
   return writeFlightRecent(loadFlightRecent().filter((row) => recentKey(row) !== key))
 }
 
-function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightDetail }) {
+function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightDetail, defaultMail = '' }) {
   const [form] = Form.useForm()
   const [recent, setRecent] = useState(() => loadFlightRecent())
   const [loading, setLoading] = useState(false)
@@ -5298,6 +5763,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
   const [batchCabins, setBatchCabins] = useState([]) // 舱位白名单，空=不限
   const [batchTier, setBatchTier] = useState([]) // 档位条件多选白名单：666/2666/66666；空数组=不限（全部档位）
   const [batchMail, setBatchMail] = useState('')
+  const [weekendMail, setWeekendMail] = useState(null)
   const [batchSummary, setBatchSummary] = useState(null)
   const [batchMode, setBatchMode] = useState('single') // 弹窗标题模式：single=转为监控任务 / batch=批量转为监控任务
   const [roundTrip, setRoundTrip] = useState(false)
@@ -5545,6 +6011,11 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
   }
 
   const followWeekend = async (card) => {
+    const mailParts = String(weekendMail ?? defaultMail).split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean)
+    if (mailParts.some((part) => !part.includes('@'))) {
+      msg.error('收件人要写成邮箱，多个用逗号分开')
+      return
+    }
     const items = [
       ...card.outs.map((flight) => ({ flight, date: card.outDate })),
       ...card.backs.map((flight) => ({ flight, date: card.backDate })),
@@ -5556,7 +6027,18 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
       flight_no: flight.flight_no,
       dep_time: flight.dep_time,
       arr_time: flight.arr_time,
+      ...(mailParts.length ? { notify_email: mailParts.join(',') } : {}),
     }))
+    const outbound = items.find((item) => item.dates[0] === card.outDate)
+    const inbound = items.find((item) => item !== outbound && item.dates[0] === card.backDate)
+    if (outbound?.flight_no && inbound?.flight_no) {
+      outbound.round_pairs = {
+        [card.outDate]: { role: 'out', mate_date: card.backDate, mate_flight: inbound.flight_no },
+      }
+      inbound.round_pairs = {
+        [card.backDate]: { role: 'back', mate_date: card.outDate, mate_flight: outbound.flight_no },
+      }
+    }
     setWatchCityKey(`${card.fromCity}|${card.city}`)
     try {
       const r = await api.addTasksBatch(items)
@@ -5888,9 +6370,28 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
       msg.error('收件人要写成邮箱，多个用逗号分开')
       return
     }
-    const items = batchGroups
-      .filter((g) => g.direction !== 'back' || g.checked)
-      .filter((g) => g.dates.length)
+    const chosen = batchGroups.filter((g) => (g.direction !== 'back' || g.checked) && (g.selected || []).length)
+    const outs = []
+    const backs = []
+    chosen.forEach((g) => {
+      const flight = g.rows[0]?.flight_no || ''
+      ;(g.selected || []).forEach((day) => {
+        const point = { group: g, day, flight, dep: g.dep_time || g.rows[0]?.dep_time || '' }
+        if (g.direction === 'back') backs.push(point)
+        else outs.push(point)
+      })
+    })
+    const pairsByGroup = new Map()
+    matchRoundTrips(outs, backs).forEach(({ out, back }) => {
+      const put = (group, day, pair) => {
+        const current = pairsByGroup.get(group) || {}
+        current[day] = pair
+        pairsByGroup.set(group, current)
+      }
+      put(out.group, out.day, { role: 'out', mate_date: back.day, mate_flight: back.flight })
+      put(back.group, back.day, { role: 'back', mate_date: out.day, mate_flight: out.flight })
+    })
+    const items = chosen
       .map((g) => {
         const row = g.rows[0] || {}
         const item = {
@@ -5903,6 +6404,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
           dep_time: row.dep_time || '',
           arr_time: row.arr_time || '',
         }
+        if (pairsByGroup.has(g)) item.round_pairs = pairsByGroup.get(g)
         // 余票/舱位监控条件：至少 N 张（≥2 才显式写入，1/不限=默认）+ 舱位白名单
         if (batchMinSeats >= 2) item.min_seats = batchMinSeats
         if (batchCabins.length) item.cabins = batchCabins
@@ -6368,6 +6870,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
                       <span>
                         当前 <b>{season.name}</b> · 距 {season.next.format('M-D')} {season.nextName}换季还有 <b>{season.days}</b> 天
                         {season.days <= 30 ? '，换季后的周末按新航季班期扫描' : ''}
+                        {dayjs().isBefore('2027-01-01') ? '。目前海航放票到 12.31，所以 1 月份暂时也可能约不了' : ''}
                       </span>
                       <span className="season-strip-tag">{season.tone === 'summer' ? '夏秋' : '冬春'}</span>
                     </div>
@@ -6697,6 +7200,18 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
               </div>
               <span className="weekend-summary-note">双程都能用 666 的排在前面，2666 专享不加分</span>
             </div>
+            {weekendCards.length > 0 && (
+              <div style={{ margin: '10px 0' }}>
+                <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+                  双向关注的邮件收件人，多个用逗号分开。那天已经有人关注的，会加在原来的收件人后面。
+                </div>
+                <Input
+                  value={weekendMail ?? defaultMail}
+                  placeholder={defaultMail ? `留空发给 ${defaultMail}` : 'name@example.com, other@example.com'}
+                  onChange={(e) => setWeekendMail(e.target.value)}
+                />
+              </div>
+            )}
             {weekendCards.length > 0 && (
               <div className="weekend-view-switch">
                 <button type="button" className={weekendView === 'list' ? 'is-on' : ''} onClick={() => setWeekendView('list')}>
@@ -7215,6 +7730,7 @@ export default function App() {
               onGo={setTab}
               tierBlockRules={tierBlockRules}
               flightDetail={flightDetail}
+              defaultMail={String(data?.config?.notify_channels?.email?.receiver || '').trim()}
             />
           </div>
           <div style={{ display: tab === 'notify' ? 'block' : 'none' }}>

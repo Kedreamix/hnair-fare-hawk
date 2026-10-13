@@ -307,6 +307,10 @@ body {
 .task-ops-icon { display: flex; justify-content: center; }
 .task-ops-icon .ant-btn { width: 32px; padding-inline: 0; }
 .task-flight-line, .task-flight-meta { display: contents; }
+.task-mail-add.ant-btn { height: 22px; padding-inline: 4px; }
+.mail-field { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 32px; }
+.mail-add-pop { display: flex; flex-direction: column; gap: 8px; }
+.mail-add-hint { color: var(--color-muted); font-size: 12px; }
 .task-flight-no { font-weight: 700; }
 .task-jump.ant-btn { height: auto; padding: 0; }
 .task-flight-time { font-weight: 650; }
@@ -447,7 +451,13 @@ html[data-theme="dark"] .map-dot.is-soft-hollow { background: color-mix(in srgb,
 .origin-field-tag button:hover { opacity: 1; }
 .origin-field-placeholder { color: var(--color-muted); opacity: .75; }
 .origin-field-meta { color: var(--color-muted); font-size: 12px; white-space: nowrap; }
-.date-strip { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 8px; scroll-snap-type: x proximity; scrollbar-width: thin; }
+.date-strip-wrap { display: flex; align-items: stretch; gap: 6px; width: 100%; min-width: 0; }
+.date-strip-nav { flex: 0 0 28px; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 8px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface); color: var(--color-ink); cursor: pointer; }
+.date-strip-nav:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+.date-strip-nav:disabled { opacity: .35; cursor: default; }
+.date-strip { flex: 1; min-width: 0; display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 8px; scroll-snap-type: x proximity; scrollbar-width: thin; }
+.date-strip.is-dragging { cursor: grabbing; scroll-snap-type: none; user-select: none; }
+.date-strip.is-dragging .date-strip-day { pointer-events: none; }
 .date-strip-day { flex: 0 0 auto; width: 64px; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 8px 0 7px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--surface-2); color: var(--color-ink); cursor: pointer; scroll-snap-align: start; transition: border-color .15s, background .15s, transform .15s; }
 .date-strip-day:hover { border-color: var(--primary); transform: translateY(-1px); }
 .date-strip-week { font-size: 12px; color: var(--color-muted); }
@@ -560,7 +570,8 @@ html[data-theme="dark"] .map-dot.is-soft-hollow { background: color-mix(in srgb,
 .weekend-summary-sub { color: var(--text-2); font-size: 13px; }
 .weekend-summary-sub b { color: var(--primary); font-size: 15px; }
 .weekend-summary-note { color: var(--text-3); font-size: 12px; }
-.season-strip { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--success-border); border-radius: 10px; background: var(--success-soft); color: var(--text-2); font-size: 13px; }
+.season-strip { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--success-border); border-radius: 10px; background: var(--success-soft); color: var(--text-2); font-size: 13px; line-height: 1.5; }
+.season-strip > span:first-child { flex: 1; min-width: 0; }
 .season-strip b { color: var(--text); }
 .season-strip.is-winter { border-color: var(--primary-border); background: var(--primary-soft); }
 .season-strip.is-soon b:last-of-type { color: var(--warning); }

@@ -116,6 +116,28 @@ def test_apply_to_record(tmp_path, monkeypatch):
     assert "_obs_time" not in out2
 
 
+def test_observation_does_not_cover_another_weekday(tmp_path, monkeypatch):
+    monkeypatch.setattr(obs, "OBS_PATH", tmp_path / "observations.json")
+    obs.record(
+        "HU7715", "北京", "深圳",
+        dep_time="20:30", arr_time="00:05",
+        observed_at="2026-11-09",
+    )
+    sunday = {
+        "flight_no": "HU7715",
+        "origin": {"city": "北京"},
+        "dest": {"city": "深圳"},
+        "dep_time": "20:45",
+        "arr_time": "00:05",
+        "days": [7],
+    }
+    weekday = {**sunday, "dep_time": "20:30", "days": [1, 2, 3, 4, 5, 6]}
+    assert obs.apply_to_record(sunday)["dep_time"] == "20:45"
+    assert obs.apply_to_record(weekday)["dep_time"] == "20:30"
+    assert obs.observation_matches_weekday({"days": [7]}, {"observed_at": "2026-11-09"}) is False
+    assert obs.observation_matches_weekday({"days": [1]}, {"observed_at": "2026-11-09"}) is True
+
+
 def test_apply_script_fuses_into_normalized(tmp_path, monkeypatch):
     # 构造迷你底表 + 观测，跑固化脚本
     monkeypatch.setattr(obs, "OBS_PATH", tmp_path / "observations.json")

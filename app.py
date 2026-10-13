@@ -366,10 +366,13 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
     - 快照字段（代表航班/时刻/经停/档位）用于列表展示，daemon 会按 task.flight_no 过滤航班，
       只提醒任务对应的那个航班，避免同航线多个任务重复提醒。
 
+    - 并入已有日期时，这次的收件人（没填就是默认收件人）加到当天原有收件人后面，不顶掉原来的。
+
     返回 {"created": 新建条数, "merged": 合并条数}。
     """
     created = 0
     merged = 0
+    default_mail = _default_receiver()
     tasks = _read_json(TASKS_PATH, DEFAULT_TASKS)
     existing = tasks.get("tasks", [])
     idx: Dict[str, int] = {}
@@ -423,9 +426,9 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
             # 当前明确只监控 199 元优惠价档：合并时统一收敛（旧普通票价任务不再保留自定义阈值语义）
             t["fare_type"] = "plus"
             t["target_price"] = 199
-            old_p = {p for p in str(t.get("product", "") or "").split("/") if p}
-            new_p = {p for p in product.split("/") if p}
-            t["product"] = "/".join(sorted(old_p | new_p))
+            # 档位以这次传入的为准。同一航班两个航季档位可能不同，取并集会把已经飞完的档位留在任务上。
+            if product:
+                t["product"] = product
             # 档位条件：合并取并集；任一为「不限/空」时保持不限（防漏报，与旧语义一致）
             existing_tiers = _task_tiers(t)
             if not tiers or not existing_tiers:
@@ -443,14 +446,26 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
                 # 同批转的余票/舱位条件一致：显式指定时覆盖（更严格的监控条件生效）
                 t["min_seats"] = norm_min
                 t["cabins"] = norm_cabins
-            # 合并不改航班默认收件人。新日期和默认不同时，只记在这一天上。
-            if notify_email and notify_email != _norm_notify_email(t.get("notify_email")):
-                fresh = [day for day in dates if day not in old_dates]
-                if fresh:
-                    mapping = _email_overrides(t)
-                    for day in fresh:
-                        mapping[day] = notify_email
-                    _set_email_overrides(t, mapping)
+            # 合并不改航班默认收件人，只按天记。
+            incoming = notify_email or default_mail
+            if incoming:
+                flight_mail = _norm_notify_email(t.get("notify_email")) or default_mail
+                mapping = _email_overrides(t)
+                for day in dates:
+                    if day in old_dates:
+                        current = task_email_for(t, day) or default_mail
+                        wanted = _norm_notify_email(f"{current},{incoming}")
+                    else:
+                        wanted = incoming
+                    if _same_mail(wanted, flight_mail):
+                        mapping.pop(day, None)
+                    else:
+                        mapping[day] = wanted
+                _set_email_overrides(t, mapping)
+            pairs = _norm_round_pairs(t.get("round_pairs"))
+            if "round_pairs" in item:
+                _merge_round_pairs(pairs, _norm_round_pairs(item.get("round_pairs")))
+            _set_round_pairs(t, pairs, set(merged_dates))
             merged += 1
         else:
             task = {
@@ -478,6 +493,8 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
                 task["cabins"] = norm_cabins
             if notify_email:
                 task["notify_email"] = notify_email
+            pairs = _norm_round_pairs(item.get("round_pairs")) if "round_pairs" in item else {}
+            _set_round_pairs(task, pairs, set(dates))
             existing.append(task)
             idx[key] = len(existing) - 1
             created += 1
@@ -485,6 +502,64 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
     tasks["tasks"] = existing
     _write_json(TASKS_PATH, tasks)
     return {"created": created, "merged": merged}
+
+
+def _pair_items(value: Any) -> List[Dict[str, str]]:
+    """某一天的配对。单个对象或列表都可以，缺字段的丢掉，重复的只留一条。"""
+    raw = value if isinstance(value, list) else [value]
+    out: List[Dict[str, str]] = []
+    seen = set()
+    for info in raw:
+        if not isinstance(info, dict):
+            continue
+        role = str(info.get("role") or "").strip()
+        mate_date = str(info.get("mate_date") or "").strip()
+        mate_flight = str(info.get("mate_flight") or "").strip().upper()
+        if role not in ("out", "back") or not mate_date or not mate_flight:
+            continue
+        key = (role, mate_date, mate_flight)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"role": role, "mate_date": mate_date, "mate_flight": mate_flight})
+    return out
+
+
+def _norm_round_pairs(value: Any) -> Dict[str, Any]:
+    """往返配对：某一天对应另一段的日期和航班号。只有一条时存对象，多条时存列表。"""
+    if not isinstance(value, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for day, info in value.items():
+        key = str(day or "").strip()
+        items = _pair_items(info)
+        if key and items:
+            out[key] = items[0] if len(items) == 1 else items
+    return out
+
+
+def _merge_round_pairs(base: Dict[str, Any], incoming: Dict[str, Any]) -> None:
+    """并入配对。去程一天只保留最新的一对；回程同一天可以对应多个去程。"""
+    for day, info in incoming.items():
+        new_items = _pair_items(info)
+        if not new_items:
+            continue
+        if new_items[0]["role"] == "out":
+            kept = new_items
+        else:
+            kept = _pair_items(base.get(day))
+            for item in new_items:
+                if not any(old["mate_date"] == item["mate_date"] and old["mate_flight"] == item["mate_flight"] for old in kept):
+                    kept.append(item)
+        base[day] = kept[0] if len(kept) == 1 else kept
+
+
+def _set_round_pairs(task: Dict[str, Any], mapping: Dict[str, Dict[str, str]], allowed_days: set) -> None:
+    kept = {day: info for day, info in mapping.items() if day in allowed_days}
+    if kept:
+        task["round_pairs"] = dict(sorted(kept.items()))
+    else:
+        task.pop("round_pairs", None)
 
 
 def _email_overrides(task: Dict[str, Any]) -> Dict[str, str]:
@@ -516,6 +591,20 @@ def task_email_for(task: Dict[str, Any], day: str) -> str:
     return _norm_notify_email(task.get("notify_email"))
 
 
+def _same_mail(a: str, b: str) -> bool:
+    return {part.lower() for part in _norm_notify_email(a).split(",") if part} == {
+        part.lower() for part in _norm_notify_email(b).split(",") if part
+    }
+
+
+def _default_receiver() -> str:
+    """通知管理里的默认邮件收件人。"""
+    config = _read_json(CONFIG_PATH, DEFAULT_CONFIG)
+    channels = config.get("notify_channels") if isinstance(config, dict) else None
+    email = channels.get("email") if isinstance(channels, dict) else None
+    return _norm_notify_email((email or {}).get("receiver") if isinstance(email, dict) else "")
+
+
 def _norm_notify_email(value: Any) -> str:
     """航线单独收件人：逗号/分号/换行分隔，只保留带 @ 的地址。"""
     raw = str(value or "").replace(";", ",").replace("；", ",").replace("，", ",").replace("\n", ",")
@@ -540,6 +629,7 @@ def update_tasks(task_ids: List[str], fields: Dict[str, Any]) -> int:
     tiers（多选白名单，空=不限）/min_seats/cabins/notify_email（航班默认收件人，空=用全局收件人）。
     notify_email_dates 有值时只改这些日期的覆盖，不改航班默认收件人。
     保留：id/enabled/target_price/fare_type/created_at。
+    round_pairs 按日期合并；已经不在 dates 里的配对删掉。
     返回受影响条数。
     """
     ids = {str(i).strip() for i in task_ids if str(i).strip()}
@@ -606,6 +696,10 @@ def update_tasks(task_ids: List[str], fields: Dict[str, Any]) -> int:
             if "notify_email" in fields:
                 task["notify_email"] = _norm_notify_email(fields.get("notify_email"))
                 task.pop("notify_email_by_date", None)
+        pairs = _norm_round_pairs(task.get("round_pairs"))
+        if "round_pairs" in fields:
+            _merge_round_pairs(pairs, _norm_round_pairs(fields.get("round_pairs")))
+        _set_round_pairs(task, pairs, current_days)
         touched += 1
     if touched:
         _write_json(TASKS_PATH, tasks)

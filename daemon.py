@@ -57,7 +57,6 @@ TASK_STAGGER_MIN = 10  # 查询组之间错峰（秒）
 TASK_STAGGER_MAX = 35
 PAIR_STAGGER_MIN = 4  # 同一组（往返）内相邻请求间隔（秒）
 PAIR_STAGGER_MAX = 7
-ROUND_TRIP_GAP_DAYS = 4  # 同航线相邻日期间隔不超过该天数视为同一组往返（与前端任务列表分组一致）
 
 
 DEFAULT_CONFIG = {
@@ -269,13 +268,42 @@ def _day_gap(a: str, b: str) -> int | None:
         return None
 
 
+def _pair_infos(task: Dict[str, Any], day: str) -> List[Dict[str, str]]:
+    """某一天上的全部往返配对。回程同一天可以对应多个去程。"""
+    raw = task.get("round_pairs")
+    if not isinstance(raw, dict):
+        return []
+    items = raw.get(day)
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, list):
+        return []
+    out: List[Dict[str, str]] = []
+    for info in items:
+        if not isinstance(info, dict):
+            continue
+        role = str(info.get("role") or "").strip()
+        mate_date = str(info.get("mate_date") or "").strip()
+        mate_flight = str(info.get("mate_flight") or "").strip().upper()
+        if role not in ("out", "back") or not mate_date or not mate_flight:
+            continue
+        out.append({"role": role, "mate_date": mate_date, "mate_flight": mate_flight})
+    return out
+
+
+def _pair_info(task: Dict[str, Any], day: str) -> Dict[str, str] | None:
+    """任务在某一天上的第一条往返配对。没有配对时返回 None。"""
+    infos = _pair_infos(task, day)
+    return infos[0] if infos else None
+
+
 def build_query_units(tasks: List[Dict[str, Any]], today: str | None = None) -> List[List[Dict[str, Any]]]:
-    """把任务展开成本轮要发的请求，并按往返分组。
+    """把任务展开成本轮要发的请求，并按明确的往返配对分组。
 
     - 每个请求是一个 (出发, 到达, 日期, 档位)，同一请求只发一次，挂上所有关注它的任务；
     - 早于今天的日期不再查询；
-    - 同一航线（不分方向）同档位、相邻日期间隔 ≤ ROUND_TRIP_GAP_DAYS 的请求归为一组，
-      组内先去程（组内最早日期的方向）后回程、各自按日期；只有一个方向的组即单程；
+    - 只有 round_pairs 能对上另一段（反方向、对方航班、对方日期都在本轮请求里）才放进同一组；
+    - 组内先去程后回程。没有配对的请求各自单查；
     - 组按最早日期排序，近的先查。
     """
     today = today or datetime.now().strftime("%Y-%m-%d")
@@ -295,66 +323,90 @@ def build_query_units(tasks: List[Dict[str, Any]], today: str | None = None) -> 
             if all(t is not task for t in req["tasks"]):
                 req["tasks"].append(task)
 
-    routes: Dict[tuple, List[Dict[str, Any]]] = {}
-    for req in requests_by_key.values():
-        route_key = (tuple(sorted((req["from_code"], req["to_code"]))), req["fare_type"])
-        routes.setdefault(route_key, []).append(req)
+    parent = {key: key for key in requests_by_key}
+
+    def find(key: tuple) -> tuple:
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    def union(left: tuple, right: tuple) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    for key, req in requests_by_key.items():
+        for task in req["tasks"]:
+            for info in _pair_infos(task, req["date"]):
+                mate_key = (req["to_code"], req["from_code"], info["mate_date"], req["fare_type"])
+                mate = requests_by_key.get(mate_key)
+                if not mate:
+                    continue
+                if not any(str(t.get("flight_no") or "").strip().upper() == info["mate_flight"] for t in mate["tasks"]):
+                    continue
+                union(key, mate_key)
+
+    grouped: Dict[tuple, List[Dict[str, Any]]] = {}
+    for key, req in requests_by_key.items():
+        grouped.setdefault(find(key), []).append(req)
+
+    def is_outbound(req: Dict[str, Any]) -> bool:
+        return any((_pair_info(task, req["date"]) or {}).get("role") == "out" for task in req["tasks"])
 
     units: List[List[Dict[str, Any]]] = []
-    for items in routes.values():
-        items.sort(key=lambda r: r["date"])
-        clusters: List[List[Dict[str, Any]]] = []
-        for req in items:
-            gap = _day_gap(clusters[-1][-1]["date"], req["date"]) if clusters else None
-            if gap is not None and gap <= ROUND_TRIP_GAP_DAYS:
-                clusters[-1].append(req)
-            else:
-                clusters.append([req])
-        for cluster in clusters:
-            out_dir = (cluster[0]["from_code"], cluster[0]["to_code"])
-            cluster.sort(key=lambda r: ((r["from_code"], r["to_code"]) != out_dir, r["date"]))
-            units.append(cluster)
+    for cluster in grouped.values():
+        cluster.sort(key=lambda req: (0 if is_outbound(req) else 1, req["date"]))
+        units.append(cluster)
     units.sort(key=lambda unit: unit[0]["date"])
     return units
 
 
-def _companion_text(unit: List[Dict[str, Any]], req: Dict[str, Any], results: Dict[tuple, Dict[str, Any]]) -> str:
-    """往返组里命中一段时，描述另一段（最近那天）的查询结果。单程组返回空串。"""
-    out_dir = (unit[0]["from_code"], unit[0]["to_code"])
-    is_out = (req["from_code"], req["to_code"]) == out_dir
-    others = [r for r in unit if ((r["from_code"], r["to_code"]) == out_dir) != is_out]
-    if not others:
+def _companion_text(
+    unit: List[Dict[str, Any]],
+    req: Dict[str, Any],
+    results: Dict[tuple, Dict[str, Any]],
+    task: Dict[str, Any] | None = None,
+) -> str:
+    """命中一段时，描述 round_pairs 里那一天的查询结果。没有配对返回空串。"""
+    task = task or next((item for item in req.get("tasks") or [] if _pair_infos(item, req["date"])), None)
+    if not task:
         return ""
-    if is_out:
-        later = [r for r in others if r["date"] > req["date"]]
-        other = min(later or others, key=lambda r: r["date"])
-    else:
-        earlier = [r for r in others if r["date"] < req["date"]]
-        other = max(earlier or others, key=lambda r: r["date"])
-    label = "回程" if is_out else "去程"
-    head = (
-        f"{label} {other['date'][5:].replace('-', '/')} "
-        f"{code_to_city_only(other['from_code'])}→{code_to_city_only(other['to_code'])}"
-    )
-    result = results.get((other["from_code"], other["to_code"], other["date"]))
-    if result is None:
-        return f"{head}：本轮未查到结果"
-    fares = {str(item.get("flight", "")).strip().upper(): item for item in result.get("fares") or []}
+    infos = _pair_infos(task, req["date"])
+    if not infos:
+        return ""
     parts = []
-    for task in other["tasks"]:
-        flight = str(task.get("flight_no", "") or "").strip().upper()
-        if not flight:
+    for info in infos:
+        mate_from, mate_to = req["to_code"], req["from_code"]
+        label = "回程" if info["role"] == "out" else "去程"
+        head = (
+            f"{label} {info['mate_date'][5:].replace('-', '/')} "
+            f"{code_to_city_only(mate_from)}→{code_to_city_only(mate_to)}"
+        )
+        other = next(
+            (
+                item for item in unit
+                if item["from_code"] == mate_from and item["to_code"] == mate_to and item["date"] == info["mate_date"]
+            ),
+            None,
+        )
+        result = results.get((mate_from, mate_to, info["mate_date"]))
+        if other is None or result is None:
+            parts.append(f"{head}：本轮未查到结果")
             continue
+        fares = {str(item.get("flight", "")).strip().upper(): item for item in result.get("fares") or []}
+        flight = info["mate_flight"]
+        owner = next(
+            (item for item in other["tasks"] if str(item.get("flight_no") or "").strip().upper() == flight),
+            None,
+        )
         item = fares.get(flight)
         if not item or not isinstance(item.get("price"), int):
-            parts.append(f"{flight} 暂无可兑票")
+            parts.append(f"{head}：{flight} 暂无可兑票")
             continue
-        mark = "也达标 ✅" if item["price"] <= _target_price(task) else "未达标"
-        parts.append(f"{flight} {item['price']} 元（{_seat_summary(item)}，{mark}）")
-    if not parts:
-        cheapest = [item["price"] for item in fares.values() if isinstance(item.get("price"), int)]
-        parts.append(f"最低 {min(cheapest)} 元" if cheapest else "暂无可兑票")
-    return f"{head}：{'；'.join(parts)}"
+        mark = "也达标 ✅" if owner and item["price"] <= _target_price(owner) else "未达标"
+        parts.append(f"{head}：{flight} {item['price']} 元（{_seat_summary(item)}，{mark}）")
+    return "；".join(parts)
 
 
 def sleep_with_status_check(seconds: int, check_interval: int) -> None:
@@ -759,7 +811,7 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
             fingerprint = _build_fingerprint(alert_task, flight, price)
             if not state_mgr.should_alert(fingerprint):
                 continue
-            companion = _companion_text(unit, req, results)
+            companion = _companion_text(unit, req, results, task)
             seat_text = _seat_summary(item)
             # 保留 Server酱（向后兼容；公众号开关关闭时跳过）
             if wechat_enabled:

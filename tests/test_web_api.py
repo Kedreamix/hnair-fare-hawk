@@ -348,7 +348,7 @@ def test_tasks_batch_create_and_state_grouped(api_server):
 
 
 def test_tasks_batch_merge_same_route(api_server):
-    """同航线再次批量建任务：日期/档位并入已有任务（merged）。"""
+    """同航线再次批量建任务：日期并入已有任务，档位改用这次传入的值。"""
     base, tmp = api_server
     first = {"items": [{"from_code": "SZX", "to_code": "HGH", "dates": ["2026-09-20"], "product": "666"}]}
     r = requests.post(f"{base}/api/tasks/batch", json=first, timeout=5)
@@ -364,7 +364,7 @@ def test_tasks_batch_merge_same_route(api_server):
     state = requests.get(f"{base}/api/state", timeout=5).json()
     row = [x for x in state["tasks"] if x["from_code"] == "SZX" and x["to_code"] == "HGH"][0]
     assert row["dates"] == ["2026-09-20", "2026-09-22", "2026-09-23"]
-    assert set(row["product"].split("/")) == {"666", "2666"}
+    assert row["product"] == "2666"
     assert len(row["ids"]) == 1  # 仍然是一条底层任务
 
 

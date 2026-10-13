@@ -167,6 +167,23 @@ def record_fares(fares: List[Dict[str, Any]], origin_city: str, dest_city: str, 
     return written
 
 
+def observation_matches_weekday(record: Dict[str, Any], obs: Dict[str, Any]) -> bool:
+    """这条观测能不能拿来改这条班期的时刻。
+
+    同一航班不同星期时刻可以不同。观测只覆盖它那天会飞的班期；
+    记录没有班期星期时仍按整条航班覆盖（用来修正过期时刻）。
+    """
+    days = record.get("days") or []
+    observed = str(obs.get("observed_at") or "")[:10]
+    if not days or not observed:
+        return True
+    try:
+        weekday = date.fromisoformat(observed).isoweekday()
+    except ValueError:
+        return True
+    return weekday in days
+
+
 def apply_to_record(record_: Dict[str, Any]) -> Dict[str, Any]:
     """用观测覆盖单条底表记录的可变事实字段（时刻/航站楼）。返回新 dict，不修改入参。"""
     out = dict(record_)
@@ -181,11 +198,12 @@ def apply_to_record(record_: Dict[str, Any]) -> Dict[str, Any]:
     if not obs:
         return out
     out = dict(out)
-    if obs.get("dep_time"):
-        out["dep_time"] = obs["dep_time"]
-        out["_obs_time"] = True
-    if obs.get("arr_time"):
-        out["arr_time"] = obs["arr_time"]
+    if observation_matches_weekday(out, obs):
+        if obs.get("dep_time"):
+            out["dep_time"] = obs["dep_time"]
+            out["_obs_time"] = True
+        if obs.get("arr_time"):
+            out["arr_time"] = obs["arr_time"]
     if obs.get("dep_terminal"):
         out["origin"] = {**o, "terminal": obs["dep_terminal"]}
     if obs.get("arr_terminal"):
