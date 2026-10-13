@@ -94,10 +94,10 @@ def _first_match(pattern: re.Pattern[str], content: str) -> str:
 
 
 def _wecom_plain_lines(content: str) -> list[str]:
-    """去掉跳转原文。企业微信打不开 hna2app，网址要单独做成可点的卡片。"""
+    """企业微信正文保留 App 链接，去掉官网地址。"""
     lines = []
     for line in str(content or "").splitlines():
-        if line.startswith("打开海航 App：") or line.startswith("官网查询："):
+        if line.startswith("官网查询：") or "https://new.hnair.com/" in line:
             continue
         text = line.strip()
         if text:
@@ -105,28 +105,10 @@ def _wecom_plain_lines(content: str) -> list[str]:
     return lines
 
 
-def _wecom_description(content: str) -> str:
-    """文本卡片说明，最长约 512 字节。"""
-    chunks = []
-    used = 0
-    for line in _wecom_plain_lines(content):
-        piece = html.escape(line)
-        extra = len(piece.encode("utf-8")) + (4 if chunks else 0)
-        if chunks and used + extra > 500:
-            break
-        chunks.append(piece)
-        used += extra
-    return "<br>".join(chunks)
-
-
 def wecom_link_markdown(title: str, content: str, urgent: bool) -> str:
-    """机器人消息里的官网地址做成可点链接。"""
+    """机器人消息带上海航 App 链接。"""
     heading = f"## ⚠️ {title}" if urgent else f"## {title}"
     body = "\n".join(_wecom_plain_lines(content))
-    web_url = _first_match(_WEB_URL_RE, content)
-    if web_url.startswith("http://") or web_url.startswith("https://"):
-        link = f"[查看航班]({web_url})"
-        body = f"{body}\n\n{link}" if body else link
     return _trim_utf8(f"{heading}\n\n{body}".strip(), 20000)
 
 
@@ -229,23 +211,8 @@ def send_wecom(cfg: Dict[str, Any], title: str, content: str, urgent: bool) -> t
         return False, "获取企业微信 access_token 失败，请检查企业ID/Secret 是否正确", ""
 
     agent = int(agent_id) if agent_id.isdigit() else agent_id
-    web_url = _first_match(_WEB_URL_RE, content)
-    # 企业微信只认 http/https。纯文本里的 hna2app 点不开，文本卡片用官网查询页作为整张卡片的跳转。
-    if web_url.startswith("http://") or web_url.startswith("https://"):
-        card_title = _trim_utf8((f"🚨 {title}" if urgent else title).strip() or "海航监控", 120)
-        payload = {
-            "touser": user_id,
-            "msgtype": "textcard",
-            "agentid": agent,
-            "textcard": {
-                "title": card_title,
-                "description": _wecom_description(content) or "有一条航班提醒",
-                "url": web_url,
-                "btntxt": "查看航班",
-            },
-            "safe": 0,
-        }
-    elif urgent:
+    # 卡片按钮只接受 http/https，点开会进官网。这里改发正文，把海航 App 链接带上。
+    if urgent:
         payload = {
             "touser": user_id,
             "msgtype": "markdown",
@@ -254,11 +221,13 @@ def send_wecom(cfg: Dict[str, Any], title: str, content: str, urgent: bool) -> t
             "safe": 0,
         }
     else:
+        body = "\n".join(_wecom_plain_lines(content))
+        text = _trim_utf8(f"{title}\n{body}".strip(), 2048)
         payload = {
             "touser": user_id,
             "msgtype": "text",
             "agentid": agent,
-            "text": {"content": f"{title}\n{content}"},
+            "text": {"content": text or title or "有一条航班提醒"},
             "safe": 0,
         }
     try:

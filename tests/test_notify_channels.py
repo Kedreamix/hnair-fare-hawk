@@ -497,8 +497,8 @@ def test_extract_seat_info_none_when_no_classes():
     assert fetcher._extract_seat_info({}) is None
 
 
-def test_wecom_card_opens_flight_page(monkeypatch):
-    """企业微信纯文本点不开 App。有官网地址时整张卡片跳到查询页。"""
+def test_wecom_sends_app_link(monkeypatch):
+    """企业微信消息带上海航 App 链接，不带官网地址。"""
     jump = channels.hna_jump_block("SZX", "SYX", "2026-10-20", "HU7701")
     sent = {}
 
@@ -514,19 +514,19 @@ def test_wecom_card_opens_flight_page(monkeypatch):
         {"corp_id": "ww1", "agent_id": "100", "secret": "sec", "user_id": "zhang"},
         "深圳→三亚 199 元",
         f"航班：HU7701\n日期：2026-10-20\n{jump}",
-        True,
+        False,
     )
     assert ok and err == "" and mid == "m1"
-    card = sent["payload"]["textcard"]
-    assert sent["payload"]["msgtype"] == "textcard"
-    assert card["url"].startswith("https://new.hnair.com/")
-    assert "orgCity=SZX" in card["url"] and "dstCity=SYX" in card["url"]
-    assert card["btntxt"] == "查看航班"
-    assert "hna2app://" not in card["description"]
-    assert "航班：HU7701" in card["description"]
-    md = channels.wecom_link_markdown("低价", f"航班：HU7701\n{jump}", False)
-    assert "[查看航班](https://new.hnair.com/" in md
-    assert "hna2app://" not in md
+    assert sent["payload"]["msgtype"] == "text"
+    text = sent["payload"]["text"]["content"]
+    assert "hna2app://app.hnar.com" in text
+    assert "depCode:SZX" in text and "dstCode:SYX" in text
+    assert "航班：HU7701" in text
+    assert "new.hnair.com" not in text
+    assert "官网查询" not in text
+    md = channels.wecom_link_markdown("低价", f"航班：HU7701\n{jump}", True)
+    assert "hna2app://app.hnar.com" in md
+    assert "new.hnair.com" not in md
 
 
 def test_apply_task_email_overrides_only_that_message():
