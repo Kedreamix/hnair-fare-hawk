@@ -28,7 +28,12 @@ AIRPORTS: List[AirportEntry] = [
     AirportEntry("上海", "虹桥", "SHA", ("上海虹桥", "虹桥机场", "虹桥")),
     AirportEntry("广州", "白云", "CAN", ("广州", "广州白云", "白云机场", "白云")),
     AirportEntry("深圳", "宝安", "SZX", ("深圳", "深圳宝安", "宝安机场", "宝安")),
-    AirportEntry("乌鲁木齐", "地窝堡", "URC", ("乌鲁木齐", "地窝堡", "乌鲁木齐地窝堡")),
+    AirportEntry(
+        "乌鲁木齐",
+        "天山",
+        "URC",
+        ("乌鲁木齐", "天山", "乌鲁木齐天山", "地窝堡", "乌鲁木齐地窝堡"),
+    ),
     AirportEntry("海口", "美兰", "HAK", ("海口", "海口美兰", "美兰机场", "美兰")),
     AirportEntry("三亚", "凤凰", "SYX", ("三亚", "三亚凤凰", "凤凰机场", "凤凰")),
     AirportEntry("重庆", "江北", "CKG", ("重庆", "重庆江北", "江北机场", "江北")),
@@ -185,7 +190,7 @@ def resolve_code(raw: str) -> tuple[str | None, list[str]]:
             exact.append(a)
             continue
 
-        # 包含匹配：支持“乌鲁木齐地窝堡”“北京大兴”等模糊输入。
+        # 包含匹配：支持“乌鲁木齐天山”“北京大兴”等模糊输入。
         if any(n in alias or alias in n for alias in aliases if alias):
             fuzzy.append(a)
 

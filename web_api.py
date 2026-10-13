@@ -670,6 +670,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 prices[fare_type] = {"status": "error", "prices": {}, "note": str(exc)}
                 continue
+            if status == "rejected" or str(status).startswith("rejected:"):
+                detail = str(status).split(":", 1)[1] if ":" in str(status) else "参数错误"
+                prices[fare_type] = {
+                    "status": "rejected",
+                    "reason": detail,
+                    "prices": {},
+                    "note": f"接口拒绝了这次查询（{detail}），不是没有航班。",
+                }
+                continue
             pmap: Dict[str, int] = {}
             for f in fares:
                 fl = str(f.get("flight") or "").strip()

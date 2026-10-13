@@ -447,17 +447,21 @@ def _make_hnair_sign(
 
 def _extract_itineraries(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """从响应体提取航班列表。"""
+    # 业务拒绝常见 data: null；不能对非 dict 再 .get。
+    inner = data.get("data")
+    if not isinstance(inner, dict):
+        inner = {}
     # 优先尝试标准嵌套结构
     air_itineraries = (
-        data.get("data", {}).get("airItineraries")
+        inner.get("airItineraries")
         or data.get("airItineraries")
-        or data.get("data", {}).get("itineraries")
+        or inner.get("itineraries")
         or data.get("itineraries")
     )
     if isinstance(air_itineraries, list):
         return air_itineraries
 
-    origin_destinations = data.get("data", {}).get("originDestinations")
+    origin_destinations = inner.get("originDestinations")
     if isinstance(origin_destinations, list) and origin_destinations:
         first_destination = origin_destinations[0]
         if isinstance(first_destination, dict):
@@ -850,6 +854,50 @@ def _is_auth_failure(status_code: int, data: Dict[str, Any]) -> tuple[bool, str]
     return False, ""
 
 
+def _apply_airport_route(leg: Dict[str, Any], from_code: str, to_code: str, date: str) -> None:
+    """把查询改成机场三字码。
+
+    监控和页面传入的都是机场码（如 SZX、TNA、PEK）。抓包若查的是城市码
+    （北京 BJS 的 destinationType 为 0），只替换三字码而留着 0，接口会回
+    E00005 参数错误，调用方却容易把它当成当天没有航班。
+    """
+    leg["origin"] = from_code.upper()
+    leg["destination"] = to_code.upper()
+    leg["departureDate"] = date
+    leg["originType"] = "1"
+    leg["destinationType"] = "1"
+
+
+def _api_rejection_message(data: Dict[str, Any]) -> str:
+    """成功响应里的业务拒绝。空字符串表示可以按「没有可购航班」处理。
+
+    success 为 false、或出现非 0/200/00000 的 errorCode（含数字码如 500）都算拒绝。
+    原因用接口原文，不把错误码再拼到前面。文案若是「无航班」「暂无航班」，原样作为原因，
+    不另外改写成没票。success 为 true 时不当成拒绝。
+    """
+    inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+    success = data.get("success")
+    if success is None and isinstance(inner, dict):
+        success = inner.get("success")
+    code = str(
+        data.get("errorCode")
+        or (inner.get("errorCode") if isinstance(inner, dict) else "")
+        or ""
+    ).strip()
+    message = str(
+        data.get("errorMessage")
+        or data.get("message")
+        or (inner.get("errorMessage") if isinstance(inner, dict) else "")
+        or (inner.get("message") if isinstance(inner, dict) else "")
+        or ""
+    ).strip()
+    if success is True:
+        return ""
+    if success is False or (code and code not in {"0", "200", "00000"}):
+        return (message or code or "参数错误").replace("\n", " ")[:80]
+    return ""
+
+
 def _load_captured_request_profile(fare_type: str) -> Dict[str, Any]:
     """读取本地保存的完整浏览器请求，作为当前票价类型的请求模板。"""
     config = _read_json_file(BASE_DIR / "config.json")
@@ -919,9 +967,7 @@ def _build_request_profile(
         data = payload.setdefault("data", {})
         origin_destinations = data.setdefault("originDestinations", [{}])
         if origin_destinations and isinstance(origin_destinations[0], dict):
-            origin_destinations[0]["origin"] = from_code.upper()
-            origin_destinations[0]["destination"] = to_code.upper()
-            origin_destinations[0]["departureDate"] = date
+            _apply_airport_route(origin_destinations[0], from_code, to_code, date)
         if fare_type == "plus":
             path = urlsplit(str(captured_profile.get("url", ""))).path
             token = str((captured_profile.get("query") or {}).get("token", "")).strip()
@@ -976,9 +1022,7 @@ def _build_request_profile(
     data = payload.setdefault("data", {})
     origin_destinations = data.setdefault("originDestinations", [{}])
     if origin_destinations and isinstance(origin_destinations[0], dict):
-        origin_destinations[0]["origin"] = from_code.upper()
-        origin_destinations[0]["destination"] = to_code.upper()
-        origin_destinations[0]["departureDate"] = date
+        _apply_airport_route(origin_destinations[0], from_code, to_code, date)
 
     # 静态模板仅作为未导入完整请求时的兼容兜底。
     if fare_type == "plus":
@@ -1099,7 +1143,8 @@ def _request_price(profile: Dict[str, Any]) -> "tuple[str, List[Dict[str, Any]]]
     - "ok"      ：正常返回，fares 为可购航班列表；
     - "network" ：网络不通 / 网关错误 / 429 限流 / 非 200；
     - "parse"   ：响应不是预期 JSON 结构；
-    - "empty"   ：200 且解析成功，但没有任何可购航班。
+    - "empty"   ：200 且业务成功，但没有任何可购航班。
+    - "rejected:<原因>" ：200，但接口以参数错误等业务原因拒绝，不能当成没票。
 
     鉴权失败（401/403/验签错误/占位符）一律抛 TokenExpiredError。
     """
@@ -1155,6 +1200,10 @@ def _request_price(profile: Dict[str, Any]) -> "tuple[str, List[Dict[str, Any]]]
         raise TokenExpiredError(f"接口鉴权失败：{auth_hint}" if auth_hint else "接口鉴权失败")
 
     itineraries = _extract_itineraries(data)
+    rejection = _api_rejection_message(data)
+    if rejection and not itineraries:
+        # 参数错误等业务拒绝不是「当天没票」。有航班时仍按航班解析，不拿拒绝覆盖结果。
+        return f"rejected:{rejection}", []
     if not itineraries:
         return "empty", []
 

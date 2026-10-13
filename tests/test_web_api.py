@@ -481,6 +481,36 @@ def test_flights_heatmap_one_way_destinations(api_server):
     assert bad.status_code == 400 and bad.json()["ok"] is False
 
 
+def test_price_query_exposes_business_rejection(api_server, monkeypatch):
+    base, tmp = api_server
+    cfg = json.loads((tmp / "config.json").read_text(encoding="utf-8"))
+    cfg["plus_curl"] = "curl https://app.hnair.com/ticket/lfs/ffl/airLowFareSearch"
+    cfg["normal_curl"] = "curl https://app.hnair.com/ticket/lfs/airLowFareSearch"
+    cfg["price_query"] = {"enabled": True, "min_interval": 2}
+    (tmp / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+
+    def fake_fetch(from_code, to_code, date, fare_type="normal"):
+        if fare_type == "plus":
+            return "rejected:参数错误", []
+        return "rejected", []
+
+    monkeypatch.setattr(web_api, "fetch_price_status", fake_fetch)
+    r = requests.get(
+        f"{base}/api/flights/prices",
+        params={"from": "SZX", "to": "URC", "date": "2026-10-20"},
+        timeout=5,
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["prices"]["plus"]["status"] == "rejected"
+    assert body["prices"]["plus"]["reason"] == "参数错误"
+    assert body["prices"]["plus"]["note"] == "接口拒绝了这次查询（参数错误），不是没有航班。"
+    assert body["prices"]["plus"]["prices"] == {}
+    assert body["prices"]["normal"]["status"] == "rejected"
+    assert body["prices"]["normal"]["reason"] == "参数错误"
+    assert body["prices"]["normal"]["note"] == "接口拒绝了这次查询（参数错误），不是没有航班。"
+
+
 def test_history_records_expose_extra_fields(api_server):
     """history 透传档位/起降时刻/余票字段（旧记录缺失时前端可防空）。"""
     base, tmp = api_server

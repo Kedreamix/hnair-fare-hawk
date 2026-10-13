@@ -99,11 +99,33 @@ def test_captured_plus_profile_keeps_sign_and_updates_route(tmp_path, monkeypatc
     assert profile["preserve_captured_sign"] is True
     assert profile["query"]["hnairSign"] == "valid-sign"
     assert profile["headers"]["cookie"] == "session=masked"
-    assert route == {
-        "origin": "SHE",
-        "destination": "CAN",
-        "departureDate": "2026-09-16",
-    }
+    assert route["origin"] == "SHE"
+    assert route["destination"] == "CAN"
+    assert route["departureDate"] == "2026-09-16"
+    assert route["originType"] == "1"
+    assert route["destinationType"] == "1"
+
+
+def test_captured_city_type_is_rewritten_for_airport_codes(tmp_path, monkeypatch):
+    """抓包里的城市码类型 0 不能跟着机场三字码一起发出去。"""
+    command = """curl --url 'https://example.test/ffl/airLowFareSearch?token=masked&hnairSign=valid-sign' \\
+  -H 'appver: 10.17.2' \\
+  -b 'session=masked' \\
+  --data-raw '{"data": {"originDestinations": [{"origin": "SZX", "destination": "BJS", "departureDate": "2026-11-06", "originType": "1", "destinationType": "0"}]}}'
+"""
+    (tmp_path / "config.json").write_text(
+        json.dumps({"plus_curl": command}), encoding="utf-8"
+    )
+    monkeypatch.setattr(fetcher, "BASE_DIR", tmp_path)
+
+    profile = fetcher._build_request_profile("SZX", "TNA", "2026-11-07", "plus")
+    route = profile["payload"]["data"]["originDestinations"][0]
+
+    assert route["origin"] == "SZX"
+    assert route["destination"] == "TNA"
+    assert route["departureDate"] == "2026-11-07"
+    assert route["originType"] == "1"
+    assert route["destinationType"] == "1"
 
 
 def test_derived_normal_profile_from_plus_ticket(tmp_path, monkeypatch):
@@ -379,6 +401,20 @@ def test_fetch_price_status_ok_and_empty(monkeypatch):
     assert status == "empty"
     assert fares == []
 
+    monkeypatch.setattr(
+        fetcher.requests,
+        "post",
+        lambda *a, **k: _mk_response(200, {
+            "success": False,
+            "errorCode": "E00005",
+            "errorMessage": "参数错误",
+            "data": {"originDestinations": []},
+        }),
+    )
+    status, fares = fetcher.fetch_price_status("SHE", "CAN", "2026-09-16", "plus")
+    assert status == "rejected:参数错误"
+    assert fares == []
+
 
 def test_fetch_price_status_network_and_parse(monkeypatch):
     monkeypatch.setattr(fetcher, "_build_request_profile", lambda *a, **k: _mk_profile())
@@ -496,3 +532,137 @@ def test_query_gate_spaces_requests(tmp_path, monkeypatch):
     start = _time.time()
     _f._wait_query_gate()
     assert _time.time() - start >= 0.9
+
+
+def test_substituting_codes_forces_airport_type_over_city_template(tmp_path, monkeypatch):
+    """BJS + type 0 的城市码模板换成机场三字码后，类型必须改成 1，否则接口回 E00005。"""
+    command = """curl --url 'https://example.test/ffl/airLowFareSearch?token=masked&hnairSign=valid-sign' \\
+  -H 'appver: 10.17.2' \\
+  -b 'session=masked' \\
+  --data-raw '{"data": {"originDestinations": [{"origin": "BJS", "destination": "URC", "originType": 0, "destinationType": "0", "departureDate": "2026-01-01"}], "specialZone": "ffl"}}'
+"""
+    (tmp_path / "config.json").write_text(
+        json.dumps({"plus_curl": command}), encoding="utf-8"
+    )
+    monkeypatch.setattr(fetcher, "BASE_DIR", tmp_path)
+
+    profile = fetcher._build_request_profile("PEK", "URC", "2026-10-20", "plus")
+    route = profile["payload"]["data"]["originDestinations"][0]
+    assert route["origin"] == "PEK"
+    assert route["destination"] == "URC"
+    assert route["originType"] == "1"
+    assert route["destinationType"] == "1"
+    assert route["departureDate"] == "2026-10-20"
+
+
+def test_business_rejection_is_not_reported_as_no_flights(monkeypatch):
+    """data 为 null 也不能抛错；原因用接口原文，不带错误码前缀。"""
+    monkeypatch.setattr(fetcher, "_build_request_profile", lambda *a, **k: _mk_profile())
+    monkeypatch.setattr(fetcher, "_load_proxy", lambda: "")
+    monkeypatch.setattr(
+        fetcher.requests,
+        "post",
+        lambda *a, **k: _mk_response(200, {
+            "success": False,
+            "errorCode": "E00005",
+            "errorMessage": "出发到达类型不匹配",
+            "data": None,
+        }),
+    )
+    status, fares = fetcher.fetch_price_status("PEK", "URC", "2026-10-20", "plus")
+    assert status == "rejected:出发到达类型不匹配"
+    assert fares == []
+
+
+def test_success_false_no_flight_message_is_rejection(monkeypatch):
+    """success 为 false 时，「暂无航班」本身就是拒绝原因，不当成没票。"""
+    monkeypatch.setattr(fetcher, "_build_request_profile", lambda *a, **k: _mk_profile())
+    monkeypatch.setattr(fetcher, "_load_proxy", lambda: "")
+    monkeypatch.setattr(
+        fetcher.requests,
+        "post",
+        lambda *a, **k: _mk_response(200, {
+            "success": False,
+            "message": "暂无航班",
+            "data": {"originDestinations": [{"airItineraries": []}]},
+        }),
+    )
+    status, fares = fetcher.fetch_price_status("SZX", "URC", "2026-10-20", "plus")
+    assert status == "rejected:暂无航班"
+    assert fares == []
+
+
+def test_success_true_no_flight_message_stays_empty(monkeypatch):
+    monkeypatch.setattr(fetcher, "_build_request_profile", lambda *a, **k: _mk_profile())
+    monkeypatch.setattr(fetcher, "_load_proxy", lambda: "")
+    monkeypatch.setattr(
+        fetcher.requests,
+        "post",
+        lambda *a, **k: _mk_response(200, {
+            "success": True,
+            "message": "无航班",
+            "data": {"originDestinations": [{"airItineraries": []}]},
+        }),
+    )
+    status, fares = fetcher.fetch_price_status("SZX", "URC", "2026-10-20", "plus")
+    assert status == "empty"
+    assert fares == []
+
+
+def test_error_message_without_code_is_rejection(monkeypatch):
+    monkeypatch.setattr(fetcher, "_build_request_profile", lambda *a, **k: _mk_profile())
+    monkeypatch.setattr(fetcher, "_load_proxy", lambda: "")
+    monkeypatch.setattr(
+        fetcher.requests,
+        "post",
+        lambda *a, **k: _mk_response(200, {
+            "success": False,
+            "errorMessage": "请求参数错误",
+        }),
+    )
+    status, fares = fetcher.fetch_price_status("SZX", "URC", "2026-10-20", "normal")
+    assert status == "rejected:请求参数错误"
+    assert fares == []
+
+
+def test_success_false_without_code_or_message_is_rejection(monkeypatch):
+    monkeypatch.setattr(fetcher, "_build_request_profile", lambda *a, **k: _mk_profile())
+    monkeypatch.setattr(fetcher, "_load_proxy", lambda: "")
+    monkeypatch.setattr(
+        fetcher.requests,
+        "post",
+        lambda *a, **k: _mk_response(200, {"success": False, "data": None}),
+    )
+    status, fares = fetcher.fetch_price_status("SZX", "URC", "2026-10-20", "plus")
+    assert status == "rejected:参数错误"
+    assert fares == []
+
+
+def test_numeric_error_code_is_rejection(monkeypatch):
+    monkeypatch.setattr(fetcher, "_build_request_profile", lambda *a, **k: _mk_profile())
+    monkeypatch.setattr(fetcher, "_load_proxy", lambda: "")
+    monkeypatch.setattr(
+        fetcher.requests,
+        "post",
+        lambda *a, **k: _mk_response(200, {"errorCode": 500, "data": {"originDestinations": []}}),
+    )
+    status, fares = fetcher.fetch_price_status("SZX", "URC", "2026-10-20", "normal")
+    assert status == "rejected:500"
+    assert fares == []
+
+
+def test_rejection_is_ignored_when_flights_are_present(monkeypatch):
+    payload = _itinerary_response()
+    payload["success"] = False
+    payload["errorCode"] = "E00005"
+    payload["errorMessage"] = "参数错误"
+    monkeypatch.setattr(fetcher, "_build_request_profile", lambda *a, **k: _mk_profile())
+    monkeypatch.setattr(fetcher, "_load_proxy", lambda: "")
+    monkeypatch.setattr(
+        fetcher.requests,
+        "post",
+        lambda *a, **k: _mk_response(200, payload),
+    )
+    status, fares = fetcher.fetch_price_status("SHE", "CAN", "2026-09-16", "plus")
+    assert status == "ok"
+    assert fares[0]["flight"] == "HU7204"

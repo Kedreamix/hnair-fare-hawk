@@ -176,6 +176,35 @@ def test_run_round_accumulates_prior_failed(monkeypatch):
         s.PROGRESS_FILE = orig
 
 
+def test_run_round_rejection_is_not_a_network_pause(monkeypatch):
+    # 业务拒绝不能记成无航班，也不能当成连续网络失败把整轮扫停。
+    # 原因不带错误码前缀；裸 "rejected" 同样不计网络失败。
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        orig = s.PROGRESS_FILE
+        s.PROGRESS_FILE = Path(tmp) / "progress.json"
+        monkeypatch.setattr(
+            s, "fetch_price_status", lambda *a, **k: ("rejected:出发到达类型不匹配", [])
+        )
+        done, failed, stat, interrupted = s.run_round({}, [_task()], set(), set(), _args())
+        assert interrupted is False
+        assert done == set()
+        assert failed == {"PEK|CAN|1"}
+        assert stat["rejected"] == 1
+        assert stat["network"] == 0
+        assert stat["empty"] == 0
+
+        monkeypatch.setattr(s, "fetch_price_status", lambda *a, **k: ("rejected", []))
+        done, failed, stat, interrupted = s.run_round({}, [_task()], set(), set(), _args())
+        assert interrupted is False
+        assert stat["rejected"] == 1
+        assert stat["network"] == 0
+        assert stat["empty"] == 0
+        s.PROGRESS_FILE = orig
+
+
 def test_run_round_ok_marks_done(monkeypatch):
     import tempfile
     from pathlib import Path

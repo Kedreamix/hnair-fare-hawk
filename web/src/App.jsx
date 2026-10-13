@@ -37,6 +37,14 @@ function shortCity(label) {
   return String(label || '').split('（')[0] || label
 }
 
+/* 从「深圳（SZX）」「深圳宝安（SZX）」或裸三字码里取出机场码。官网链接必须用三字码，不能把中文标签塞进 orgCity。 */
+function airportCodeOf(label) {
+  const text = String(label || '').trim()
+  if (/^[A-Za-z]{3}$/.test(text)) return text.toUpperCase()
+  const matched = text.match(/[（(]\s*([A-Za-z]{3})\b/)
+  return matched ? matched[1].toUpperCase() : ''
+}
+
 // 展开底表 effective_dates 区间到逐日（去重排序）；FlightQuery 与监控任务编辑弹窗共用
 function expandDates(ranges) {
   const seen = new Set()
@@ -220,7 +228,7 @@ function HitTag({ hit }) {
 }
 
 /* ================= 总览 ================= */
-function Overview({ data, onGo, onToggleStatus, onChanged, msg }) {
+function Overview({ data, onGo, onToggleStatus, onChanged, msg, onOpenDetail }) {
   const cfg = data.config
   const stats = data.stats
   const running = cfg.status === 'running'
@@ -284,6 +292,45 @@ function Overview({ data, onGo, onToggleStatus, onChanged, msg }) {
     {
       title: '价格(元)', dataIndex: 'price', width: 100, align: 'right',
       render: (v) => <span style={{ color: 'var(--color-low-price)', fontWeight: 700 }}>¥{v}</span>,
+    },
+    {
+      title: '操作', key: 'jump', width: 168,
+      render: (_, r) => {
+        const from = airportCodeOf(r.from)
+        const to = airportCodeOf(r.to)
+        const canDetail = !!(r.date && r.from && r.to)
+        const canOfficial = !!(r.date && from && to)
+        const rec = { from_code: from, to_code: to, flight_no: r.flight || '' }
+        return (
+          <Space size={8} wrap>
+            <Button
+              size="small"
+              type="link"
+              className="task-jump"
+              disabled={!canDetail}
+              onClick={() => onOpenDetail && onOpenDetail({
+                from: r.from,
+                to: r.to,
+                flightNo: r.flight || '',
+                date: r.date,
+              })}
+            >
+              查看详情
+            </Button>
+            <Button
+              size="small"
+              type="link"
+              className="task-jump"
+              disabled={!canOfficial}
+              href={canOfficial ? officialWebUrl(rec, r.date, isPhone()) : undefined}
+              target="_blank"
+              rel="noreferrer"
+            >
+              跳到官网
+            </Button>
+          </Space>
+        )
+      },
     },
   ]
 
@@ -395,7 +442,7 @@ function Overview({ data, onGo, onToggleStatus, onChanged, msg }) {
           pagination={false}
           dataSource={hits}
           columns={columns}
-          scroll={{ y: 400 }}
+          scroll={{ x: 1140, y: 400 }}
           locale={{ emptyText: <Empty description="暂无低价命中，监控运行后会出现在这里" /> }}
         />
       </Card>
@@ -2467,8 +2514,8 @@ function isPhone() {
 }
 
 function officialWebUrl(rec, day, mobile) {
-  const from = rec.origin?.iata || rec.from_code || ''
-  const to = rec.dest?.iata || rec.to_code || ''
+  const from = rec.origin?.iata || airportCodeOf(rec.from_code) || airportCodeOf(rec.from) || airportCodeOf(rec.from_city) || ''
+  const to = rec.dest?.iata || airportCodeOf(rec.to_code) || airportCodeOf(rec.to) || airportCodeOf(rec.to_city) || ''
   if (mobile) {
     const params = new URLSearchParams({ depCode: from, dstCode: to, startTime: day, tripType: '1' })
     return `https://m.hnair.com/?${params}#/book/checkTiket`
@@ -2483,8 +2530,8 @@ function officialWebUrl(rec, day, mobile) {
 }
 
 function openHnaApp(rec, day, msg) {
-  const from = rec.origin?.iata || rec.from_code || ''
-  const to = rec.dest?.iata || rec.to_code || ''
+  const from = rec.origin?.iata || airportCodeOf(rec.from_code) || airportCodeOf(rec.from) || airportCodeOf(rec.from_city) || ''
+  const to = rec.dest?.iata || airportCodeOf(rec.to_code) || airportCodeOf(rec.to) || airportCodeOf(rec.to_city) || ''
   const url = `hna2app://app.hnar.com?url=searchIndex&params={depCode:${from},dstCode:${to},startTime:${day},tripType:1}`
   const ios = /iPhone|iPad|iPod/i.test(navigator.userAgent || '')
   const store = ios
@@ -5262,6 +5309,13 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
               setStopsInfo(p.stops || null)
               setTimesMap(p.times || null)
               setSeatsInfo(p.seats || null)
+              const rejected = ['normal', 'plus'].flatMap((key) => {
+                const item = p.prices?.[key]
+                if (item?.status !== 'rejected') return []
+                const label = key === 'plus' ? '优惠价' : '原价'
+                return [`${label}被接口拒绝：${item.reason || item.note || '未说明原因'}（不是无航班）`]
+              })
+              if (rejected.length) setErrMsg(rejected.join('；'))
             }
           } catch (e) {
             if (e.status === 429 && e.retry_after) {
@@ -5651,6 +5705,9 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
       title: '原价', key: 'orig_price', width: 100, fixed: freezeQuery ? 'right' : undefined,
       render: (_, g) => {
         if (priceLoading) return <Spin size="small" />
+        if (prices?.normal?.status === 'rejected') {
+          return <Typography.Text type="danger" style={{ fontSize: 12 }} title={prices.normal.reason || prices.normal.note}>已拒绝</Typography.Text>
+        }
         const v = prices?.normal?.prices?.[g.flight_no]
         if (v != null) return <span className="mono">¥{v}</span>
         if (priceTried) return <Typography.Text type="secondary" style={{ fontSize: 12 }}>未查询到</Typography.Text>
@@ -5661,6 +5718,9 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
       title: '优惠价', key: 'plus_price', width: 100, fixed: freezeQuery ? 'right' : undefined,
       render: (_, g) => {
         if (priceLoading) return <Spin size="small" />
+        if (prices?.plus?.status === 'rejected') {
+          return <Typography.Text type="danger" style={{ fontSize: 12 }} title={prices.plus.reason || prices.plus.note}>已拒绝</Typography.Text>
+        }
         const v = prices?.plus?.prices?.[g.flight_no]
         if (v != null) return <span className="mono" style={{ color: 'var(--color-low-price)', fontWeight: 600 }}>¥{v}</span>
         if (priceTried) return <Typography.Text type="secondary" style={{ fontSize: 12 }}>未查询到</Typography.Text>
@@ -6754,7 +6814,7 @@ export default function App() {
         {/* 所有 tab 常驻挂载、display 切换，避免切 tab 丢失组件内状态（查询结果/表单/勾选等） */}
         <div className="page">
           <div style={{ display: tab === 'overview' ? 'block' : 'none' }}>
-            <Overview data={data} onGo={setTab} onToggleStatus={toggleStatus} onChanged={refresh} msg={msg} />
+            <Overview data={data} onGo={setTab} onToggleStatus={toggleStatus} onChanged={refresh} msg={msg} onOpenDetail={openFlightDetail} />
           </div>
           <div style={{ display: tab === 'tasks' ? 'block' : 'none' }}>
             <Tasks data={data} onChanged={refresh} msg={msg} onGo={setTab} onOpenDetail={openFlightDetail} tierBlockRules={tierBlockRules} />
