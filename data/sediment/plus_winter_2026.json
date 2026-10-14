@@ -6167,7 +6167,7 @@
    "dest": {
     "city": "蚌埠",
     "airport": "蚌埠滕湖机场",
-    "iata": "BFU"
+    "iata": "BFY"
    },
    "dep_time": "08:00",
    "arr_time": "10:15",
@@ -6187,7 +6187,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（官方无该OD航班）。 多日期复核仍空。"
+   "notes": null
   },
   {
    "flight_no": "PN6215",
@@ -22602,7 +22602,7 @@
    "dest": {
     "city": "蚌埠",
     "airport": "蚌埠滕湖机场",
-    "iata": "BFU"
+    "iata": "BFY"
    },
    "dep_time": "06:40",
    "arr_time": "09:30",
@@ -22622,7 +22622,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（官方无该OD航班）。 多日期复核仍空。"
+   "notes": null
   },
   {
    "flight_no": "8L9628",
