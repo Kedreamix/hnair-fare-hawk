@@ -2,7 +2,7 @@
  "season": "2026冬春",
  "title": "海航 PLUS 适用航班 26 冬春",
  "generated_at": "2026-10-14",
- "count": 1512,
+ "count": 1514,
  "records": [
   {
    "flight_no": "GS7514",
@@ -5779,23 +5779,52 @@
    "arr_time": "00:20",
    "days": [
     2,
-    3,
     4,
-    5,
-    6,
-    7
+    6
    ],
    "effective_dates": [
     [
      "2026-10-27",
-     "2027-03-27"
+     "2026-10-31"
     ]
    ],
    "product": "2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（官方无该OD航班）。"
+   "notes": null
+  },
+  {
+   "flight_no": "GS6500",
+   "carrier": "天津航空",
+   "origin": {
+    "city": "赤峰",
+    "airport": "玉龙",
+    "iata": "CIF"
+   },
+   "dest": {
+    "city": "贵阳",
+    "airport": "贵阳龙洞堡国际机场",
+    "iata": "KWE"
+   },
+   "dep_time": "19:30",
+   "arr_time": "00:20",
+   "days": [
+    3,
+    5,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-11-01",
+     "2027-03-26"
+    ]
+   ],
+   "product": "2666",
+   "product_conflict": false,
+   "source": "plus_winter_2026",
+   "season": "2026冬春",
+   "notes": null
   },
   {
    "flight_no": "GS6686",
@@ -6158,7 +6187,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（官方无该OD航班）。"
+   "notes": "官方权益未返回，同程仍有班（官方无该OD航班）。 多日期复核仍空。"
   },
   {
    "flight_no": "PN6215",
@@ -22593,7 +22622,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（官方无该OD航班）。"
+   "notes": "官方权益未返回，同程仍有班（官方无该OD航班）。 多日期复核仍空。"
   },
   {
    "flight_no": "8L9628",
@@ -35079,23 +35108,52 @@
    "arr_time": "00:20",
    "days": [
     2,
-    3,
     4,
-    5,
-    6,
-    7
+    6
    ],
    "effective_dates": [
     [
      "2026-10-27",
-     "2027-03-27"
+     "2026-10-31"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（官方无该OD航班）。"
+   "notes": null
+  },
+  {
+   "flight_no": "GS6500",
+   "carrier": "天津航空",
+   "origin": {
+    "city": "石家庄",
+    "airport": "石家庄正定国际机场",
+    "iata": "SJW"
+   },
+   "dest": {
+    "city": "贵阳",
+    "airport": "贵阳龙洞堡国际机场",
+    "iata": "KWE"
+   },
+   "dep_time": "21:35",
+   "arr_time": "00:20",
+   "days": [
+    3,
+    5,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-11-01",
+     "2027-03-26"
+    ]
+   ],
+   "product": "666/2666",
+   "product_conflict": false,
+   "source": "plus_winter_2026",
+   "season": "2026冬春",
+   "notes": null
   },
   {
    "flight_no": "JD5258",
@@ -35196,7 +35254,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（官方无该OD航班；10/27补查仍空）。"
+   "notes": null
   },
   {
    "flight_no": "JD5539",
@@ -36522,7 +36580,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（同航班号未在官方结果中）。"
+   "notes": null
   },
   {
    "flight_no": "GS7901",
@@ -42047,7 +42105,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（同航班号未在官方结果中）。"
+   "notes": null
   },
   {
    "flight_no": "GS7665",
@@ -43911,7 +43969,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（同航班号未在官方结果中；10/27补查仍空）。"
+   "notes": null
   },
   {
    "flight_no": "9H8353",
@@ -45188,7 +45246,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（官方无该OD航班）。"
+   "notes": null
   },
   {
    "flight_no": "8L9605",
@@ -45292,7 +45350,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（官方无该OD航班；10/27补查仍空）。"
+   "notes": null
   },
   {
    "flight_no": "JD5788",
@@ -45425,7 +45483,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（官方无该OD航班；10/27补查仍空）。"
+   "notes": null
   },
   {
    "flight_no": "8L9641",
@@ -45458,7 +45516,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（官方无该OD航班）。"
+   "notes": null
   },
   {
    "flight_no": "GS6472",
@@ -46724,7 +46782,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官方权益未返回，同程仍有班（同航班号未在官方结果中；10/27补查仍空）。"
+   "notes": null
   },
   {
    "flight_no": "GS7449",
@@ -49750,7 +49808,7 @@
    "product_conflict": false,
    "source": "blackxool_v1009",
    "season": "2026冬春",
-   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季 官方权益未返回，同程仍有班（表内产品666;同程日期2026-10-25;官方666未返回）。"
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季 官方权益未返回，同程仍有班（表内产品666;同程日期2026-10-25;官方666未返回）。 多日期复核仍空。"
   },
   {
    "flight_no": "8L9557",
