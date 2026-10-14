@@ -5779,16 +5779,45 @@
    "arr_time": "00:20",
    "days": [
     2,
-    3,
     4,
-    5,
-    6,
-    7
+    6
    ],
    "effective_dates": [
     [
      "2026-10-27",
-     "2027-03-27"
+     "2026-10-31"
+    ]
+   ],
+   "product": "2666",
+   "product_conflict": false,
+   "source": "plus_winter_2026",
+   "season": "2026冬春",
+   "notes": null
+  },
+  {
+   "flight_no": "GS6500",
+   "carrier": "天津航空",
+   "origin": {
+    "city": "赤峰",
+    "airport": "玉龙",
+    "iata": "CIF"
+   },
+   "dest": {
+    "city": "贵阳",
+    "airport": "贵阳龙洞堡国际机场",
+    "iata": "KWE"
+   },
+   "dep_time": "19:30",
+   "arr_time": "00:20",
+   "days": [
+    3,
+    5,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-11-01",
+     "2027-03-26"
     ]
    ],
    "product": "2666",
@@ -6138,7 +6167,7 @@
    "dest": {
     "city": "蚌埠",
     "airport": "蚌埠滕湖机场",
-    "iata": "BFU"
+    "iata": "BFY"
    },
    "dep_time": "08:00",
    "arr_time": "10:15",
@@ -8812,17 +8841,18 @@
     "airport": "郑州新郑国际机场",
     "iata": "CGO"
    },
-   "dep_time": "23:05",
-   "arr_time": "00:50",
+   "dep_time": "21:20",
+   "arr_time": "22:55",
    "days": [
-    2,
-    4,
-    6
+    1,
+    3,
+    5,
+    7
    ],
    "effective_dates": [
     [
-     "2026-10-27",
-     "2027-03-27"
+     "2026-10-25",
+     "2027-03-26"
     ]
    ],
    "product": "666/2666",
@@ -9047,17 +9077,16 @@
     "airport": "重庆江北国际机场",
     "iata": "CKG"
    },
-   "dep_time": "22:50",
-   "arr_time": "00:25",
+   "dep_time": "20:25",
+   "arr_time": "22:00",
    "days": [
-    2,
-    4,
-    6
+    1,
+    7
    ],
    "effective_dates": [
     [
-     "2026-10-27",
-     "2027-03-27"
+     "2026-10-25",
+     "2027-03-22"
     ]
    ],
    "product": "666/2666",
@@ -12105,7 +12134,7 @@
      "2027-03-18"
     ]
    ],
-   "product": "666/2666",
+   "product": "2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
@@ -12135,7 +12164,7 @@
      "2027-03-20"
     ]
    ],
-   "product": "666/2666",
+   "product": "2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
@@ -13065,20 +13094,21 @@
     "airport": "泉州晋江国际机场",
     "iata": "JJN"
    },
-   "dep_time": "08:00",
-   "arr_time": "10:10",
+   "dep_time": "08:15",
+   "arr_time": "10:20",
    "days": [
-    2,
-    4,
-    6
+    1,
+    3,
+    5,
+    7
    ],
    "effective_dates": [
     [
-     "2026-10-27",
-     "2027-03-27"
+     "2026-10-25",
+     "2026-11-30"
     ]
    ],
-   "product": "666/2666",
+   "product": "2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
@@ -14700,7 +14730,7 @@
    "dest": {
     "city": "蚌埠",
     "airport": "蚌埠滕湖机场",
-    "iata": "BFU"
+    "iata": "BFY"
    },
    "dep_time": "06:55",
    "arr_time": "09:45",
@@ -19151,17 +19181,16 @@
     "airport": "三亚凤凰国际机场",
     "iata": "SYX"
    },
-   "dep_time": "19:45",
-   "arr_time": "22:50",
+   "dep_time": "20:15",
+   "arr_time": "22:55",
    "days": [
-    2,
-    4,
-    6
+    1,
+    7
    ],
    "effective_dates": [
     [
-     "2026-10-27",
-     "2027-03-27"
+     "2026-10-25",
+     "2026-10-26"
     ]
    ],
    "product": "2666",
@@ -20684,17 +20713,15 @@
     "airport": "锡林浩特机场",
     "iata": "XIL"
    },
-   "dep_time": "08:30",
-   "arr_time": "09:40",
+   "dep_time": "07:00",
+   "arr_time": "08:00",
    "days": [
-    1,
-    3,
-    5
+    7
    ],
    "effective_dates": [
     [
-     "2026-10-26",
-     "2027-03-26"
+     "2026-10-25",
+     "2027-03-21"
     ]
    ],
    "product": "2666",
@@ -21669,38 +21696,6 @@
    "notes": null
   },
   {
-   "flight_no": "PN6328",
-   "carrier": "西部航空",
-   "origin": {
-    "city": "济南",
-    "airport": "济南遥墙国际机场",
-    "iata": "TNA"
-   },
-   "dest": {
-    "city": "重庆",
-    "airport": "重庆江北国际机场",
-    "iata": "CKG"
-   },
-   "dep_time": "19:20",
-   "arr_time": "22:15",
-   "days": [
-    2,
-    4,
-    6
-   ],
-   "effective_dates": [
-    [
-     "2026-10-27",
-     "2027-03-27"
-    ]
-   ],
-   "product": "2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
    "flight_no": "HU7210",
    "carrier": "海南航空",
    "origin": {
@@ -21916,20 +21911,18 @@
     "airport": "吴圩",
     "iata": "NNG"
    },
-   "dep_time": "07:30",
-   "arr_time": "10:50",
+   "dep_time": "08:30",
+   "arr_time": "11:50",
    "days": [
-    1,
-    2,
-    6
+    7
    ],
    "effective_dates": [
     [
-     "2026-11-02",
-     "2027-01-16"
+     "2026-10-25",
+     "2026-10-25"
     ]
    ],
-   "product": "666/2666",
+   "product": "2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
@@ -22578,17 +22571,18 @@
     "airport": "郑州新郑国际机场",
     "iata": "CGO"
    },
-   "dep_time": "21:10",
-   "arr_time": "01:00",
+   "dep_time": "20:45",
+   "arr_time": "00:35",
    "days": [
-    2,
-    4,
-    6
+    1,
+    3,
+    5,
+    7
    ],
    "effective_dates": [
     [
-     "2026-10-27",
-     "2027-03-27"
+     "2026-10-25",
+     "2027-03-26"
     ]
    ],
    "product": "666/2666",
@@ -22608,7 +22602,7 @@
    "dest": {
     "city": "蚌埠",
     "airport": "蚌埠滕湖机场",
-    "iata": "BFU"
+    "iata": "BFY"
    },
    "dep_time": "06:40",
    "arr_time": "09:30",
@@ -23046,15 +23040,17 @@
     "airport": "赣州黄金机场",
     "iata": "KOW"
    },
-   "dep_time": "07:15",
-   "arr_time": "09:35",
+   "dep_time": "06:55",
+   "arr_time": "09:15",
    "days": [
-    3
+    1,
+    5,
+    7
    ],
    "effective_dates": [
     [
-     "2026-10-28",
-     "2027-03-24"
+     "2026-10-25",
+     "2027-03-26"
     ]
    ],
    "product": "666/2666",
@@ -23949,15 +23945,17 @@
     "airport": "温州龙湾国际机场",
     "iata": "WNZ"
    },
-   "dep_time": "07:15",
+   "dep_time": "06:55",
    "arr_time": "11:45",
    "days": [
-    3
+    1,
+    5,
+    7
    ],
    "effective_dates": [
     [
-     "2026-10-28",
-     "2027-03-24"
+     "2026-10-25",
+     "2027-03-26"
     ]
    ],
    "product": "666/2666",
@@ -26131,17 +26129,15 @@
     "airport": "杭州萧山国际机场",
     "iata": "HGH"
    },
-   "dep_time": "21:50",
-   "arr_time": "00:15",
+   "dep_time": "21:35",
+   "arr_time": "23:50",
    "days": [
-    2,
-    4,
-    6
+    7
    ],
    "effective_dates": [
     [
-     "2026-10-27",
-     "2027-03-27"
+     "2026-10-25",
+     "2026-10-25"
     ]
    ],
    "product": "666/2666",
@@ -26265,17 +26261,15 @@
     "airport": "成都天府国际机场",
     "iata": "TFU"
    },
-   "dep_time": "19:55",
-   "arr_time": "22:35",
+   "dep_time": "22:00",
+   "arr_time": "00:40",
    "days": [
-    2,
-    4,
-    6
+    7
    ],
    "effective_dates": [
     [
-     "2026-10-27",
-     "2027-03-27"
+     "2026-10-25",
+     "2026-10-25"
     ]
    ],
    "product": "2666",
@@ -29223,17 +29217,18 @@
     "airport": "贵阳龙洞堡国际机场",
     "iata": "KWE"
    },
-   "dep_time": "07:00",
-   "arr_time": "09:25",
+   "dep_time": "07:15",
+   "arr_time": "09:40",
    "days": [
-    2,
-    4,
-    6
+    1,
+    3,
+    5,
+    7
    ],
    "effective_dates": [
     [
-     "2026-10-27",
-     "2027-03-27"
+     "2026-10-25",
+     "2027-03-26"
     ]
    ],
    "product": "666/2666",
@@ -29288,16 +29283,15 @@
     "airport": "三亚凤凰国际机场",
     "iata": "SYX"
    },
-   "dep_time": "19:40",
-   "arr_time": "22:00",
+   "dep_time": "22:40",
+   "arr_time": "01:15",
    "days": [
-    1,
-    5
+    7
    ],
    "effective_dates": [
     [
-     "2026-10-26",
-     "2027-03-26"
+     "2026-10-25",
+     "2026-10-25"
     ]
    ],
    "product": "2666",
@@ -31642,17 +31636,16 @@
     "airport": "西安咸阳国际机场",
     "iata": "XIY"
    },
-   "dep_time": "06:55",
+   "dep_time": "07:10",
    "arr_time": "10:25",
    "days": [
-    2,
-    4,
-    6
+    1,
+    7
    ],
    "effective_dates": [
     [
-     "2026-10-27",
-     "2027-03-27"
+     "2026-10-25",
+     "2026-10-26"
     ]
    ],
    "product": "666/2666",
@@ -32913,13 +32906,9 @@
    "dep_time": "21:00",
    "arr_time": "23:15",
    "days": [
-    1,
     2,
-    3,
     4,
-    5,
-    6,
-    7
+    6
    ],
    "effective_dates": [
     [
@@ -34306,21 +34295,22 @@
     1,
     2,
     3,
+    4,
     5,
     6,
     7
    ],
    "effective_dates": [
     [
-     "2026-10-26",
-     "2026-12-23"
+     "2026-10-25",
+     "2027-03-27"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官网：深圳-青岛06:40-10:05，除周四，2026-10-26至2026-12-23。原PLUS表写每日且至2027-03-27"
+   "notes": "PDF：深圳-青岛每日 06:40，2026-10-25 至 2027-03-27。到达时刻沿用表内 10:05。"
   },
   {
    "flight_no": "HU7750",
@@ -34554,7 +34544,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "PLUS表原有06:50二四六，不是官网权益查询主班。官网主班为07:05一三五日至2026-12-23"
+   "notes": "PLUS 表原有 06:50 二四六，本行班期与时刻未改。PDF 主班为 07:05 一三五七，有效期至季末 2027-03-26。"
   },
   {
    "flight_no": "HU7779",
@@ -34580,14 +34570,14 @@
    "effective_dates": [
     [
      "2026-10-25",
-     "2026-12-23"
+     "2027-03-26"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官网权益主班：经停武汉07:05-12:40，一三五日至2026-12-23。原PLUS表写到2027-03-26"
+   "notes": "PDF/核对：经停武汉 07:05-12:40，班期一三五七，有效期至季末 2027-03-26。此前曾缩短到 2026-12-23。"
   },
   {
    "flight_no": "HU7769",
@@ -34655,7 +34645,7 @@
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "PLUS表原有06:50二四六，不是官网权益查询主班。官网主班为07:05一三五日至2026-12-23"
+   "notes": "PLUS 表原有 06:50 二四六，本行班期与时刻未改。PDF 主班为 07:05 一三五七，有效期至季末 2027-03-26。"
   },
   {
    "flight_no": "HU7779",
@@ -34681,14 +34671,14 @@
    "effective_dates": [
     [
      "2026-10-25",
-     "2026-12-23"
+     "2027-03-26"
     ]
    ],
    "product": "666/2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
-   "notes": "官网权益主班：07:05一三五日至2026-12-23。原PLUS表写到2027-03-26"
+   "notes": "PDF/核对：07:05-09:00，班期一三五七，有效期至季末 2027-03-26。此前曾缩短到 2026-12-23。"
   },
   {
    "flight_no": "HU7852",
@@ -35118,16 +35108,45 @@
    "arr_time": "00:20",
    "days": [
     2,
-    3,
     4,
-    5,
-    6,
-    7
+    6
    ],
    "effective_dates": [
     [
      "2026-10-27",
-     "2027-03-27"
+     "2026-10-31"
+    ]
+   ],
+   "product": "666/2666",
+   "product_conflict": false,
+   "source": "plus_winter_2026",
+   "season": "2026冬春",
+   "notes": null
+  },
+  {
+   "flight_no": "GS6500",
+   "carrier": "天津航空",
+   "origin": {
+    "city": "石家庄",
+    "airport": "石家庄正定国际机场",
+    "iata": "SJW"
+   },
+   "dest": {
+    "city": "贵阳",
+    "airport": "贵阳龙洞堡国际机场",
+    "iata": "KWE"
+   },
+   "dep_time": "21:35",
+   "arr_time": "00:20",
+   "days": [
+    3,
+    5,
+    7
+   ],
+   "effective_dates": [
+    [
+     "2026-11-01",
+     "2027-03-26"
     ]
    ],
    "product": "666/2666",
@@ -38573,17 +38592,18 @@
     "airport": "宁波栎社国际机场",
     "iata": "NGB"
    },
-   "dep_time": "08:15",
+   "dep_time": "08:00",
    "arr_time": "09:35",
    "days": [
-    2,
-    4,
-    6
+    1,
+    3,
+    5,
+    7
    ],
    "effective_dates": [
     [
-     "2026-10-27",
-     "2026-11-28"
+     "2026-10-25",
+     "2026-11-30"
     ]
    ],
    "product": "2666",
@@ -39410,7 +39430,7 @@
      "2027-03-27"
     ]
    ],
-   "product": "666/2666",
+   "product": "2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
@@ -39642,7 +39662,7 @@
      "2027-03-27"
     ]
    ],
-   "product": "666/2666",
+   "product": "2666",
    "product_conflict": false,
    "source": "plus_winter_2026",
    "season": "2026冬春",
@@ -41048,15 +41068,15 @@
     "airport": "长沙黄花国际机场",
     "iata": "CSX"
    },
-   "dep_time": "07:55",
+   "dep_time": "07:40",
    "arr_time": "10:00",
    "days": [
-    6
+    4
    ],
    "effective_dates": [
     [
-     "2026-10-31",
-     "2027-03-27"
+     "2026-10-29",
+     "2027-03-25"
     ]
    ],
    "product": "666/2666",
@@ -41498,15 +41518,15 @@
     "airport": "乌鲁木齐天山国际机场",
     "iata": "URC"
    },
-   "dep_time": "07:55",
+   "dep_time": "07:40",
    "arr_time": "15:25",
    "days": [
-    6
+    4
    ],
    "effective_dates": [
     [
-     "2026-10-31",
-     "2027-03-27"
+     "2026-10-29",
+     "2027-03-25"
     ]
    ],
    "product": "666/2666",
@@ -47766,38 +47786,6 @@
     "airport": "福州长乐国际机场",
     "iata": "FOC"
    },
-   "dep_time": "07:55",
-   "arr_time": "10:25",
-   "days": [
-    2,
-    4,
-    6
-   ],
-   "effective_dates": [
-    [
-     "2026-10-27",
-     "2027-03-27"
-    ]
-   ],
-   "product": "666/2666",
-   "product_conflict": false,
-   "source": "plus_winter_2026",
-   "season": "2026冬春",
-   "notes": null
-  },
-  {
-   "flight_no": "UQ3585",
-   "carrier": "乌鲁木齐航空",
-   "origin": {
-    "city": "郑州",
-    "airport": "郑州新郑国际机场",
-    "iata": "CGO"
-   },
-   "dest": {
-    "city": "福州",
-    "airport": "福州长乐国际机场",
-    "iata": "FOC"
-   },
    "dep_time": "08:20",
    "arr_time": "10:25",
    "days": [
@@ -49820,7 +49808,7 @@
    "product_conflict": false,
    "source": "blackxool_v1009",
    "season": "2026冬春",
-   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季"
+   "notes": "Blackxool v1009 winter_active=Y（666表）。官网 ableAirlineQuery 尚未逐班核实。日期按 CSV 窗口，常止于12月，不是全季 官方权益未返回，同程仍有班（表内产品666;同程日期2026-10-25;官方666未返回）。 多日期复核仍空。"
   },
   {
    "flight_no": "8L9557",

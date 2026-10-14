@@ -244,19 +244,21 @@ def test_szx_winter_official_schedule():
     wuh = one("SZX", "WUH", "HU7779", "2026-10-26")
     assert (wuh["dep_time"], wuh["arr_time"]) == ("07:05", "09:00")
     assert wuh["days"] == [1, 3, 5, 7]
-    assert wuh["effective_dates"] == [["2026-10-25", "2026-12-23"]]
+    assert wuh["effective_dates"] == [["2026-10-25", "2027-03-26"]]
     she = one("SZX", "SHE", "HU7779", "2026-10-26")
     assert (she["dep_time"], she["arr_time"]) == ("07:05", "12:40")
-    assert she["effective_dates"] == [["2026-10-25", "2026-12-23"]]
+    assert she["effective_dates"] == [["2026-10-25", "2027-03-26"]]
     float_wuh = one("SZX", "WUH", "HU7779", "2026-10-27")
     assert float_wuh["dep_time"] == "06:50" and float_wuh["days"] == [2, 4, 6]
-    assert sediment.query(from_city="SZX", to_city="WUH", flight_no="HU7779", date_str="2026-12-28") == []
+    late = one("SZX", "WUH", "HU7779", "2026-12-28")
+    assert late["dep_time"] == "07:05" and late["days"] == [1, 3, 5, 7]
 
     tao = one("SZX", "TAO", "HU7763", "2026-10-26")
     assert (tao["dep_time"], tao["arr_time"]) == ("06:40", "10:05")
-    assert tao["days"] == [1, 2, 3, 5, 6, 7]
-    assert tao["effective_dates"] == [["2026-10-26", "2026-12-23"]]
-    assert sediment.query(from_city="SZX", to_city="TAO", flight_no="HU7763", date_str="2026-10-29") == []
+    assert tao["days"] == [1, 2, 3, 4, 5, 6, 7]
+    assert tao["effective_dates"] == [["2026-10-25", "2027-03-27"]]
+    thursday = one("SZX", "TAO", "HU7763", "2026-10-29")
+    assert thursday["dep_time"] == "06:40"
     assert sediment.query(from_city="SZX", to_city="LHW", flight_no="HU7763", date_str="2026-10-26") == []
     assert sediment.query(from_city="SZX", to_city="LHW", flight_no="HU7763", date_str="2026-10-24")
     lhw = one("SZX", "LHW", "HU7852", "2026-10-26")
