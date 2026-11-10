@@ -217,6 +217,43 @@ def test_same_flight_keeps_each_schedule():
     assert monday[0]["days"] == [1, 2, 4, 5, 6]
 
 
+def test_hu7715_sunday_pek_szx_rights_windows():
+    """HU7715 周日 PEK→SZX：rightsSearch cardType 666 为 20:30–00:05，生效窗分三段。
+
+    抽查 2026-10-25、2026-11-01、2026-11-08、2026-11-15、2026-12-06。
+    周一至周六那一行没有本次冲突证据，保持原窗。
+    """
+    rows = [
+        r for r in sediment.load_records()
+        if r.get("flight_no") == "HU7715"
+        and (r.get("origin") or {}).get("iata") == "PEK"
+        and (r.get("dest") or {}).get("iata") == "SZX"
+        and r.get("source") == "plus_winter_2026"
+    ]
+    sunday = [r for r in rows if r.get("days") == [7]]
+    weekday = [r for r in rows if r.get("days") == [1, 2, 3, 4, 5, 6]]
+    assert len(sunday) == 1
+    assert len(weekday) == 1
+    sun = sunday[0]
+    assert (sun["dep_time"], sun["arr_time"]) == ("20:30", "00:05")
+    assert sun["product"] == "666/2666"
+    assert sun["effective_dates"] == [
+        ["2026-10-25", "2026-10-25"],
+        ["2026-11-01", "2026-11-29"],
+        ["2026-12-06", "2027-03-21"],
+    ]
+    assert weekday[0]["dep_time"] == "20:30"
+    assert weekday[0]["arr_time"] == "00:05"
+    assert weekday[0]["effective_dates"] == [["2026-10-26", "2027-03-27"]]
+    for day in ("2026-10-25", "2026-11-01", "2026-11-08", "2026-11-15", "2026-12-06"):
+        hit = sediment.query(from_city="北京", to_city="深圳", flight_no="HU7715", date_str=day)
+        assert len(hit) == 1, day
+        assert hit[0]["days"] == [7]
+        assert (hit[0]["dep_time"], hit[0]["arr_time"]) == ("20:30", "00:05")
+    gap = sediment.query(from_city="北京", to_city="深圳", flight_no="HU7715", date_str="2026-11-30")
+    assert gap and all(r["days"] != [7] for r in gap)
+
+
 def test_szx_winter_official_schedule():
     """深圳冬春只在 plus_winter，时刻按官网 2026-10-26；主表只留夏秋尾。"""
     def one(origin, dest, flight_no, day):
