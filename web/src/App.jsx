@@ -14,6 +14,9 @@ import { api, formatTs } from './api.js'
 import { usePolling } from './components.jsx'
 import { cityWithProvince } from './cityProvince.js'
 import { AIRPORT_TAX, FACE_PRICE, weekendFareEstimate } from './weekendFare.js'
+import MonitorSettings from './pages/MonitorSettings.jsx'
+import Notifications from './pages/Notifications.jsx'
+import History from './pages/History.jsx'
 
 const TABS = [
   { key: 'overview', icon: <OverviewIcon />, label: '总览' },
@@ -242,7 +245,14 @@ function Overview({ data, onGo, onToggleStatus, onChanged, msg, onOpenDetail }) 
   const cfg = data.config
   const stats = data.stats
   const running = cfg.status === 'running'
-  const hits = [...(data.history || [])].reverse().filter((r) => Number(r.price) <= 500).slice(0, 50)
+  const hits = (data.history || []).filter((r) => {
+    if (!(Number(r.price) <= 500) || !r.task_id) return false
+    const flight = String(r.flight || '').toUpperCase()
+    const day = String(r.date || '')
+    const tasks = data.tasks || []
+    if (!flight || !day || !tasks.length) return true
+    return tasks.some((t) => String(t.flight_no || '').toUpperCase() === flight && (t.dates || []).includes(day))
+  }).reverse().slice(0, 50)
 
   const taskOf = (r) => (data.tasks || []).find((t) => Array.isArray(t.ids) && t.ids.includes(r.task_id))
 
@@ -540,6 +550,8 @@ function findMates(legs, task, day) {
 }
 
 function pairMonitorRows(tasks) {
+  // 同一对城市收成一张航线卡。有去有回显示往返；只有单程也合在一起，
+  // 不再因为多一条任务（例如到达时刻差几分钟）再列一张「深圳 → 哈尔滨」。
   const pairKey = (t) => [t.from_code, t.to_code].sort().join('|')
   const byPair = new Map()
   tasks.forEach((t, i) => {
@@ -557,15 +569,17 @@ function pairMonitorRows(tasks) {
   tasks.forEach((t, i) => {
     if (used.has(i)) return
     const key = pairKey(t)
-    if (!bothWays.has(key)) {
-      used.add(i)
-      rows.push({ key: `single-${(t.ids || [t.id]).join('-')}`, bothWays: false, paired: false, legs: [t] })
-      return
-    }
     const members = byPair.get(key).map((j) => tasks[j])
     byPair.get(key).forEach((j) => used.add(j))
-    const paired = members.some((task) => (task.dates || []).some((day) => findMates(members, task, day).length))
-    rows.push({ key: `route-${key}`, bothWays: true, paired, legs: members })
+    const round = bothWays.has(key)
+    const paired = round && members.some((task) => (task.dates || []).some((day) => findMates(members, task, day).length))
+    const dir = `${members[0].from_code}>${members[0].to_code}`
+    rows.push({
+      key: round ? `route-${key}` : `route-${dir}`,
+      bothWays: round,
+      paired,
+      legs: members,
+    })
   })
   return rows
 }
@@ -1015,10 +1029,38 @@ function MailField({ value, onChange, fallback, msg, disabled }) {
 }
 
 function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
-  const tasks = data.tasks || []
+  const rawTasks = data.tasks || []
   const globalMail = String(data?.config?.notify_channels?.email?.receiver || '').trim()
-  // 「只能查/显示当天及以后」：过去日期从所有可选池剔除（编辑弹窗日期选项、档位联动、兜底池）
-  const todayStr = dayjs().format('YYYY-MM-DD')
+  const releaseCutoff = String(data?.config?.release_cutoff_date || '2026-12-31').trim()
+  const probeMinutes = Number(data?.config?.unreleased_probe_minutes || 60)
+  const shortCutoff = releaseCutoff.length >= 10 ? releaseCutoff.slice(5).replace('-', '.') : releaseCutoff
+  // 「只能查/显示当天及以后（且当日未过起飞时刻）」：过去日期和当日已起飞航班从监控列表及可选池剔除
+  const nowMoment = dayjs()
+  const todayStr = nowMoment.format('YYYY-MM-DD')
+  const nowHm = nowMoment.format('HH:mm')
+  const isDateActiveForTask = (d, depTime) => {
+    if (d < todayStr) return false
+    if (d > todayStr) return true
+    const dep = String(depTime || '').trim()
+    if (/^\d{2}:\d{2}$/.test(dep) && dep <= nowHm) return false
+    return true
+  }
+  const tasks = useMemo(() => (
+    rawTasks
+      .map((t) => {
+        const allDates = Array.isArray(t.dates) ? t.dates : []
+        const validDates = allDates.filter((d) => isDateActiveForTask(d, t.dep_time))
+        if (allDates.length && !validDates.length) return null
+        if (validDates.length === allDates.length) return t
+        return {
+          ...t,
+          dates: validDates,
+          date: validDates[0] || '',
+          date_end: validDates[validDates.length - 1] || '',
+        }
+      })
+      .filter(Boolean)
+  ), [rawTasks, todayStr, nowHm])
 
   const saveDayMail = async (task, day, notifyEmail) => {
     await api.updateTasks(task.ids || [task.id], {
@@ -1499,7 +1541,10 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
         className="task-board"
         title={`监控任务 · ${tasks.length} 班 · ${taskRows.length} 条航线`}
         extra={
-          <Space>
+          <Space wrap>
+            <Tooltip title={`当前海航随心飞已开启抢票至 ${releaseCutoff}；超过该日期的航班将每 ${probeMinutes} 分钟低频探测一次，一旦放票会自动更新截止日并恢复高频监控（可在「监控设置」手动调整）`}>
+              <Tag color="blue" style={{ cursor: 'help', marginInlineEnd: 0 }}>当前开启抢票至 {shortCutoff}</Tag>
+            </Tooltip>
             <Button type="primary" ghost icon={<CompassIcon />} onClick={() => onGo('flights')}>去航线查询添加</Button>
           </Space>
         }
@@ -1634,7 +1679,15 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                         <div className="task-flight-meta">
                           {products.map((p) => <Tag key={p} color={p === '666' ? 'gold' : 'purple'} style={{ marginInlineEnd: 0 }}>{p}</Tag>)}
                           <span className="task-flight-price">¥199</span>
-                          {rowOn ? <Tag color="green" style={{ marginInlineEnd: 0 }}>监控中</Tag> : <Tag style={{ marginInlineEnd: 0 }}>已停止</Tag>}
+                          {!rowOn ? (
+                            <Tag style={{ marginInlineEnd: 0 }}>已停止</Tag>
+                          ) : (day && releaseCutoff && day > releaseCutoff) ? (
+                            <Tooltip title={`目前海航开启抢票至 ${shortCutoff}，该日期尚未开启抢票；后台每 ${probeMinutes} 分钟低频探测一次，一旦探测到放票将自动更新截止日并转为高频监控`}>
+                              <Tag color="cyan" style={{ marginInlineEnd: 0 }}>待开启抢票 · 探测中</Tag>
+                            </Tooltip>
+                          ) : (
+                            <Tag color="green" style={{ marginInlineEnd: 0 }}>监控中</Tag>
+                          )}
                           {(t.tiers || []).map((p) => <Tag key={p} style={{ marginInlineEnd: 0 }}>提醒 {p}</Tag>)}
                           {seatBits.map((bit) => <Tag key={bit} color="blue" style={{ marginInlineEnd: 0 }}>{bit}</Tag>)}
                           {stopTag(t)}
@@ -2039,1073 +2092,6 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
           </Form.Item>
         </Form>
       </Modal>
-    </div>
-  )
-}
-
-/* ================= 监控管理（票据 + 时段 + 高级设置） ================= */
-function detectFareType(raw) {
-  // PLUS 只认 ffl/airLowFareSearch。airCtLowFareSearch 不是 PLUS，不能改地址复用。
-  const m = String(raw || '').match(/https?:\/\/[^\s'"]+/i)
-  const path = m ? m[0] : ''
-  if (path.includes('airCtLowFareSearch')) return 'invalid'
-  if (path.includes('ffl')) return 'plus'
-  if (path.includes('airLowFareSearch')) return 'normal'
-  return ''
-}
-
-function TicketSetup({ cfg, onChanged, msg }) {
-  const plus = cfg.plus_ticket || {}
-  const normal = cfg.normal_ticket || {}
-  const hasPlus = !!plus.configured
-  const hasNormal = !!normal.configured
-  const any = hasPlus || hasNormal
-  // 主档优先展示 PLUS。只有 PLUS 票据时，普通票可以借用；普通票不能反过来派生 PLUS。
-  const primary = hasPlus ? 'plus' : hasNormal ? 'normal' : null
-  const primaryTicket = primary === 'plus' ? plus : primary === 'normal' ? normal : null
-  const derivedType = primary === 'plus' && !hasNormal ? 'normal' : ''
-
-  const [editing, setEditing] = useState(!any)
-  const [raw, setRaw] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [revealed, setRevealed] = useState('')
-  const [secondsLeft, setSecondsLeft] = useState(0)
-
-  useEffect(() => {
-    if (!revealed) return undefined
-    const timer = setTimeout(() => { setRevealed(''); setSecondsLeft(0) }, 30000)
-    return () => clearTimeout(timer)
-  }, [revealed])
-
-  useEffect(() => {
-    if (!revealed) return undefined
-    const iv = setInterval(() => setSecondsLeft((s) => (s > 0 ? s - 1 : 0)), 1000)
-    return () => clearInterval(iv)
-  }, [revealed])
-
-  const detected = detectFareType(raw)
-  const detectedLabel = detected === 'plus' ? 'PLUS 专享' : detected === 'normal' ? '普通票价' : detected === 'invalid' ? '不可用' : '未识别'
-
-  const save = async () => {
-    setError('')
-    if (!raw.trim()) { setError('内容为空，未保存。'); return }
-    if (detected === 'invalid') {
-      setError('这是 airCtLowFareSearch，不能当作 PLUS。请在 PLUS 专享入口抓取 ffl/airLowFareSearch。')
-      return
-    }
-    if (!detected) { setError('没有识别到 airLowFareSearch 请求，未保存。'); return }
-    setBusy(true)
-    try {
-      const r = await api.saveTicket(detected, raw)
-      if (!r.ok) { setError(r.error || '保存失败'); return }
-      const extra = detected === 'plus' ? '普通票可借用这份登录态。' : 'PLUS 仍需单独抓取 ffl/airLowFareSearch。'
-      msg.success(`票据已识别为「${detectedLabel}」并保存。${extra}daemon 下一轮自动生效`)
-      setRaw('')
-      setEditing(false)
-      onChanged()
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const reveal = async () => {
-    if (!primary) return
-    if (revealed) { setRevealed(''); setSecondsLeft(0); return }
-    try {
-      const r = await api.ticketRaw(primary)
-      setRevealed(r.raw || '')
-      setSecondsLeft(30)
-    } catch (e) {
-      msg.error(e.message)
-    }
-  }
-
-  const bodyOk = primaryTicket && primaryTicket.configured && primaryTicket.length > 0
-  const statusTag = !any
-    ? <Tag color="orange">未配置</Tag>
-    : hasPlus && hasNormal
-      ? <Tag color="green">已配置（两档均有）</Tag>
-      : <Tag color="green">已配置</Tag>
-
-  return (
-    <Card title="抓包票据" extra={statusTag}>
-      <Row gutter={[16, 8]} wrap align="middle">
-        <Col flex="auto" style={{ minWidth: 0 }}>
-          <Descriptions size="small" column={1}>
-            <Descriptions.Item label="当前票据">
-              {primary ? (primary === 'plus' ? 'PLUS 专享' : '普通票价') : '—'}
-            </Descriptions.Item>
-            <Descriptions.Item label="请求地址">
-              {primaryTicket?.configured ? (
-                <Tooltip title={primaryTicket.url}>
-                  <Typography.Text ellipsis style={{ maxWidth: '100%', display: 'block' }}>{primaryTicket.url}</Typography.Text>
-                </Tooltip>
-              ) : '—'}
-            </Descriptions.Item>
-            <Descriptions.Item label="端点">
-              {primaryTicket?.configured ? (primaryTicket.endpoint_note || '—') : '—'}
-            </Descriptions.Item>
-            <Descriptions.Item label="体积">
-              {primaryTicket ? `${(primaryTicket.length / 1024).toFixed(1)} KB` : '—'}
-            </Descriptions.Item>
-          </Descriptions>
-        </Col>
-        {!editing && (
-          <Col flex="none">
-            <Button type="primary" icon={<EditIcon />} onClick={() => setEditing(true)}>更新票据</Button>
-          </Col>
-        )}
-      </Row>
-
-      <Space style={{ margin: '12px 0 4px' }} size={[8, 8]} wrap>
-        <Tag color={primaryTicket?.configured ? 'green' : 'red'}>{primaryTicket?.configured ? '✓' : '✗'} 请求地址已解析</Tag>
-        <Tag color={bodyOk ? 'green' : 'red'}>{bodyOk ? '✓' : '✗'} 请求体完整</Tag>
-        {primaryTicket?.configured && (
-          <Button size="small" type="link" onClick={reveal}>{revealed ? '收起明文' : '查看明文'}</Button>
-        )}
-      </Space>
-
-      {derivedType && (
-        <Alert
-          style={{ marginTop: 8 }}
-          type="info"
-          showIcon
-          message="未单独抓包普通票价票据：运行时会借用 PLUS 票据，并改回普通票端点。"
-        />
-      )}
-      {!derivedType && hasPlus && hasNormal && (
-        <Alert style={{ marginTop: 8 }} type="success" showIcon message="PLUS 与普通档均已单独配置，均按原档使用。" />
-      )}
-
-      {revealed && (
-        <div className="raw-box">
-          <pre>{revealed}</pre>
-          <div className="muted" style={{ fontSize: 12 }}>{secondsLeft} 秒后自动收起</div>
-        </div>
-      )}
-
-      {editing && (
-        <div>
-          <div className="muted" style={{ marginBottom: 6 }}>
-            粘贴后自动识别档位，当前识别为
-            <Tag color={detected === 'plus' ? 'blue' : detected === 'invalid' ? 'red' : 'default'} style={{ marginInline: '0 4px' }}>{detectedLabel}</Tag>
-            （PLUS 与普通票需要各自的请求）
-          </div>
-          <Input.TextArea
-            rows={6}
-            placeholder="粘贴完整 cURL（含 Cookie、token、hnairSign）。PLUS 用 ffl/airLowFareSearch，普通票用 airLowFareSearch。"
-            value={raw}
-            onChange={(e) => setRaw(e.target.value)}
-          />
-          {error && <Alert style={{ marginTop: 8 }} type="error" showIcon message={error} />}
-          <div style={{ marginTop: 12, textAlign: 'right' }}>
-            <Space>
-              <Button onClick={() => setRaw('')}>清空</Button>
-              {any && <Button onClick={() => setEditing(false)}>取消</Button>}
-              <Button type="primary" loading={busy} onClick={save}>保存票据</Button>
-            </Space>
-          </div>
-        </div>
-      )}
-
-      <Collapse
-        ghost
-        style={{ marginTop: 12 }}
-        items={[{
-          key: 'howto',
-          label: '如何获取票据（PLUS 和普通票要各抓一份）',
-          children: (
-            <div>
-              <Typography.Paragraph style={{ marginBottom: 8 }}>
-                <Typography.Text strong>抓包方法：</Typography.Text>
-                打开海航官网/App 查询页 → F12 开发者工具 → Network（网络）→ 找到对应查询请求 → 右键 →
-                <Typography.Text code>Copy → Copy as cURL (bash)</Typography.Text>，粘贴到上方输入框并保存。
-              </Typography.Paragraph>
-              <Typography.Paragraph style={{ marginBottom: 8 }}>
-                <Typography.Text strong>两种端点：</Typography.Text>
-                PLUS 专享请求名
-                <Typography.Text code>ffl/airLowFareSearch</Typography.Text>
-                ，URL 里要有 token。
-                <Typography.Text code>airCtLowFareSearch</Typography.Text>
-                不是 PLUS，不能改地址后复用。
-                普通票价请求名是不带 ffl 的 <Typography.Text code>airLowFareSearch</Typography.Text>。
-              </Typography.Paragraph>
-              <Typography.Paragraph style={{ marginBottom: 0 }}>
-                <Typography.Text type="secondary">
-                  两档签名不能互换。只有 PLUS 票据时，普通票可以借用并改回普通端点；只有普通票时，PLUS 不会自动派生。
-                  已配置后保存即生效，daemon 下一轮自动读取，无需重启。
-                </Typography.Text>
-              </Typography.Paragraph>
-            </div>
-          ),
-        }]}
-      />
-    </Card>
-  )
-}
-
-function MonitorSettings({ data, onChanged, msg }) {
-  const cfg = data.config
-  const [busy, setBusy] = useState('')
-  const [start, setStart] = useState(() => dayjs(cfg.monitor_window?.start || '07:00', 'HH:mm'))
-  const [end, setEnd] = useState(() => dayjs(cfg.monitor_window?.end || '23:00', 'HH:mm'))
-  const [proxy, setProxy] = useState(cfg.proxy || '')
-  const [signRefresh, setSignRefresh] = useState(cfg.sign_refresh || false)
-  const [priceQueryOn, setPriceQueryOn] = useState(cfg.price_query?.enabled !== false)
-  const [priceQueryInterval, setPriceQueryInterval] = useState(cfg.price_query?.min_interval || 8)
-  // 监控频率（daemon 轮询间隔范围，秒）：与「实时查价」不同，这里控制后台多久查一次价
-  const polling = cfg.polling || {}
-  const [pollingForm, setPollingForm] = useState({
-    day_min_sec: polling.day_min_sec ?? 90,
-    day_max_sec: polling.day_max_sec ?? 240,
-    night_min_sec: polling.night_min_sec ?? 300,
-    night_max_sec: polling.night_max_sec ?? 600,
-  })
-  const setPoll = (k) => (v) => setPollingForm((prev) => ({ ...prev, [k]: v }))
-
-  const savePolling = async () => {
-    setBusy('polling')
-    try {
-      const r = await api.savePolling(pollingForm)
-      msg.success('监控频率已保存，daemon 下一轮生效')
-      if (r.polling) setPollingForm({
-        day_min_sec: r.polling.day_min_sec, day_max_sec: r.polling.day_max_sec,
-        night_min_sec: r.polling.night_min_sec, night_max_sec: r.polling.night_max_sec,
-      })
-      onChanged()
-    } catch (e) { msg.error(e.message) } finally { setBusy('') }
-  }
-
-  const saveWindow = async () => {
-    setBusy('window')
-    try {
-      await api.saveMonitorWindow(start.format('HH:mm'), end.format('HH:mm'))
-      msg.success(`监控时段已保存：${start.format('HH:mm')} - ${end.format('HH:mm')}`)
-      onChanged()
-    } catch (e) { msg.error(e.message) } finally { setBusy('') }
-  }
-
-  const saveProxy = async () => {
-    setBusy('proxy')
-    try {
-      await api.saveProxy(proxy)
-      msg.success('代理设置已保存')
-    } catch (e) { msg.error(e.message) } finally { setBusy('') }
-  }
-
-  const toggleSignRefresh = async (v) => {
-    setSignRefresh(v)
-    try {
-      await api.saveSignRefresh(v)
-      msg.success(v ? '已开启签名刷新：每轮刷新 stime 并重签，失败自动回退' : '已关闭签名刷新')
-    } catch (e) { msg.error(e.message) }
-  }
-
-  const togglePriceQuery = async (v) => {
-    setPriceQueryOn(v)
-    try {
-      await api.savePriceQuery(v, priceQueryInterval)
-      msg.success(v ? '已开启实时查价（原价/优惠价可查）' : '已关闭实时查价（防风控），不再请求海航接口')
-      onChanged()
-    } catch (e) {
-      setPriceQueryOn(!v)
-      msg.error(e.message)
-    }
-  }
-
-  const savePriceInterval = async () => {
-    try {
-      await api.savePriceQuery(priceQueryOn, priceQueryInterval)
-      msg.success(`实时查价最小间隔已保存：${priceQueryInterval} 秒`)
-      onChanged()
-    } catch (e) { msg.error(e.message) }
-  }
-
-  return (
-    <div>
-      <TicketSetup cfg={cfg} onChanged={onChanged} msg={msg} />
-
-      {/* 实时查价（防风控） */}
-      <Card style={{ marginTop: 16, marginBottom: 16 }} title="实时查价（防风控）">
-        <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          <Space wrap>
-            <Switch checked={priceQueryOn} onChange={togglePriceQuery} checkedChildren="开" unCheckedChildren="关" />
-            <Typography.Text strong>允许实时查价（原价/优惠价）</Typography.Text>
-            <Typography.Text type="secondary">查询最小间隔</Typography.Text>
-            <InputNumber
-              min={2}
-              max={120}
-              value={priceQueryInterval}
-              onChange={(v) => setPriceQueryInterval(v || 8)}
-              addonAfter="秒"
-              style={{ width: 130 }}
-            />
-            <Button onClick={savePriceInterval} loading={busy === 'pq'}>保存间隔</Button>
-          </Space>
-          <Alert
-            type={priceQueryOn ? 'info' : 'warning'}
-            showIcon
-            message={
-              priceQueryOn
-                ? '实时查价会直接请求海航接口（存在风控风险）。已做限流：每次查询间隔不少于设定秒数，手动与监控共用此开关。'
-                : '实时查价已关闭：手动查询与监控任务都不再请求海航价格接口，只保留底表航班信息查询。'
-            }
-          />
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            航班信息（起降时刻/经停/航站楼）的更新走「第三方校正」机制（data/sediment/third_party/），
-            不依赖实时查价；如担心被风控可随时关掉本开关，不影响航班信息查询。
-          </Typography.Text>
-        </Space>
-      </Card>
-
-      {/* 监控频率（daemon 轮询节奏，区别于实时查价） */}
-      <Card style={{ marginTop: 16, marginBottom: 16 }} title="监控频率（daemon 轮询节奏）">
-        <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          <Alert
-            type="info"
-            showIcon
-            message="「监控频率」= 后台 daemon 每隔多久模拟点击一次查询，只影响监控任务的抓价节奏。频率越低越不容易被风控，但价格更新越慢。"
-          />
-          <Row gutter={16} align="middle">
-            <Col xs={24} md={12}>
-              <Space size={8} wrap>
-                <Typography.Text strong>日间（07:00-23:00）</Typography.Text>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>间隔</Typography.Text>
-                <InputNumber min={10} max={3600} value={pollingForm.day_min_sec} onChange={setPoll('day_min_sec')} addonAfter="秒" style={{ width: 110 }} />
-                <Typography.Text type="secondary">~</Typography.Text>
-                <InputNumber min={10} max={3600} value={pollingForm.day_max_sec} onChange={setPoll('day_max_sec')} addonAfter="秒" style={{ width: 110 }} />
-              </Space>
-            </Col>
-            <Col xs={24} md={12}>
-              <Space size={8} wrap>
-                <Typography.Text strong>夜间（23:00-07:00）</Typography.Text>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>间隔</Typography.Text>
-                <InputNumber min={10} max={3600} value={pollingForm.night_min_sec} onChange={setPoll('night_min_sec')} addonAfter="秒" style={{ width: 110 }} />
-                <Typography.Text type="secondary">~</Typography.Text>
-                <InputNumber min={10} max={3600} value={pollingForm.night_max_sec} onChange={setPoll('night_max_sec')} addonAfter="秒" style={{ width: 110 }} />
-              </Space>
-            </Col>
-          </Row>
-          <Space>
-            <Button type="primary" loading={busy === 'polling'} onClick={savePolling}>保存频率</Button>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              建议：日间 90~240 秒、夜间 300~600 秒可平衡及时性与风控；夜间无敏感航班可放宽到 5~10 分钟。
-              改为极短间隔（如 10 秒）会显著提高被海航限流风险，请谨慎。
-            </Typography.Text>
-          </Space>
-        </Space>
-      </Card>
-
-      {/* 监控时段 */}
-      <Card style={{ marginTop: 16, marginBottom: 16 }} title="每日监控时段">
-        <Space size="large" wrap>
-          <span>
-            <Typography.Text strong style={{ marginRight: 8 }}>开始</Typography.Text>
-            <TimePicker format="HH:mm" minuteStep={5} value={start} onChange={(v) => v && setStart(v)} />
-          </span>
-          <span>
-            <Typography.Text strong style={{ marginRight: 8 }}>结束</Typography.Text>
-            <TimePicker format="HH:mm" minuteStep={5} value={end} onChange={(v) => v && setEnd(v)} />
-          </span>
-          <Button type="primary" loading={busy === 'window'} onClick={saveWindow}>保存时段</Button>
-        </Space>
-        <div className="muted" style={{ marginTop: 8 }}>仅在该时段内轮询抓价；跨天请设置例如 22:00 到 07:00（22:00 ~ 次日 07:00）。</div>
-      </Card>
-
-      <Collapse
-        className="advanced-settings"
-        items={[{ key: 'advanced', label: '高级设置（按需展开）', children: (
-        <Row gutter={[16, 16]}>
-          <Col xs={24} md={12}>
-            <Space direction="vertical" size={8}>
-              <Space>
-                <Switch checked={signRefresh} onChange={toggleSignRefresh} checkedChildren="开" unCheckedChildren="关" />
-                <Typography.Text strong>签名刷新（stime + 重签）</Typography.Text>
-              </Space>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                开启后每轮刷新 common.stime 并重签；遇验签错误自动回退原签名抓包。建议稳定运行几天后再开。
-              </Typography.Text>
-            </Space>
-          </Col>
-          <Col xs={24} md={12}>
-            <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              <Typography.Text strong>HTTP(S) 代理（可选）</Typography.Text>
-              <Space.Compact style={{ width: '100%' }}>
-                <Input
-                  placeholder="例如 http://127.0.0.1:7890，留空表示直连"
-                  value={proxy}
-                  onChange={(e) => setProxy(e.target.value)}
-                />
-                <Button type="primary" loading={busy === 'proxy'} onClick={saveProxy}>保存代理</Button>
-              </Space.Compact>
-            </Space>
-          </Col>
-        </Row>
-        ) }]}
-      />
-    </div>
-  )
-}
-
-/* ================= 通知管理 ================= */
-function wsStateTag(ws) {
-  if (!ws) return <Tag color="orange">未知</Tag>
-  const map = {
-    connected: { color: 'green', text: '已连接' },
-    connecting: { color: 'blue', text: '连接中' },
-    reconnecting: { color: 'blue', text: '重连中' },
-    failed: { color: 'red', text: '失败' },
-    not_configured: { color: 'orange', text: '未配置' },
-    stopped: { color: 'default', text: '已停止' },
-  }
-  const m = map[ws.state] || { color: 'default', text: ws.state || '未知' }
-  return <Tag color={m.color}>{m.text}</Tag>
-}
-
-function channelStatusTag(enabled) {
-  return enabled ? <Tag color="green">已启用</Tag> : <Tag color="orange">未启用</Tag>
-}
-
-/* 教学问号支持鼠标悬停、键盘聚焦与点击展开。 */
-function GuideIcon({ title, steps }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <Popover
-      open={open}
-      onOpenChange={setOpen}
-      trigger={['hover', 'click']}
-      placement="bottomLeft"
-      content={
-        <div style={{ width: 360 }}>
-          <Space style={{ marginBottom: 8, width: '100%', justifyContent: 'space-between' }}>
-            <Typography.Text strong>{title}</Typography.Text>
-            <Button size="small" type="text" icon={<CloseIcon />} aria-label="关闭配置说明" onClick={() => setOpen(false)}>关闭</Button>
-          </Space>
-          <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 1.9, maxHeight: 320, overflow: 'auto' }}>
-            {steps.map((s, i) => (
-              <li key={i}>
-                <span style={{ fontWeight: 600 }}>{s.title}</span>
-                {s.description ? `：${s.description}` : ''}
-              </li>
-            ))}
-          </ol>
-        </div>
-      }
-    >
-      <Button
-        type="text"
-        size="small"
-        className="guide-button"
-        icon={<QuestionIcon size={14} />}
-        aria-label={`查看${title}`}
-        aria-expanded={open}
-      />
-    </Popover>
-  )
-}
-
-function ChannelCard({
-  name, title, color, guide, view, fields = [], busy, msg, onSave, onTest,
-  showSwitch = true, statusLine, testResult, onClearTest, children,
-  configured = true, // 未配置时右上角开关禁用（防止开启一个没法用的渠道）
-}) {
-  const [form] = Form.useForm()
-  const [editing, setEditing] = useState(false)
-  const enabled = !!view?.enabled
-
-  // 测试结果自动消失：成功 5 秒、失败 10 秒后关闭，避免常驻遮住卡片操作。
-  // 用 ref 持有最新 onClearTest，避免轮询刷新导致父组件重建回调而重置计时器。
-  const onClearRef = useRef(onClearTest)
-  onClearRef.current = onClearTest
-  useEffect(() => {
-    if (!testResult) return undefined
-    const timer = setTimeout(() => onClearRef.current(), testResult.ok ? 5000 : 10000)
-    return () => clearTimeout(timer)
-  }, [testResult])
-
-  const save = async () => {
-    const vals = form.getFieldsValue() || {}
-    const payload = {}
-    // 只提交真正修改过的字段：与脱敏展示值相同的（未动的掩码预填）视为「不修改」，
-    // 避免把掩码值写回真实凭证；秘密字段留空由后端保持原值。
-    for (const f of fields) {
-      const v = String(vals[f.key] ?? '').trim()
-      const cur = String(view?.[f.key] ?? '')
-      if (v === cur) continue
-      payload[f.key] = v
-    }
-    try {
-      if (Object.keys(payload).length) await onSave({ [name]: { ...payload } })
-      msg.success('配置已保存')
-      setEditing(false)
-      form.resetFields()
-    } catch (e) { msg.error(e.message) }
-  }
-
-  const toggle = async (v) => {
-    try {
-      await onSave({ [name]: { enabled: v } })
-      msg.success(v ? `${title} 已启用` : `${title} 已停用`)
-    } catch (e) { msg.error(e.message) }
-  }
-
-  const summary = fields.some((f) => view?.[f.key])
-    ? `已配置：${fields.filter((f) => view?.[f.key]).map((f) => `${f.label} ${view[f.key]}`).join('；')}`
-    : ''
-
-  return (
-    <Col xs={24} sm={12} xl={8}>
-      <Card
-        size="small"
-        className={`channel-card ${configured ? 'is-configured' : 'is-idle'}`}
-        style={{ height: '100%' }}
-        title={
-          <Space size={6} wrap>
-            <span style={{ width: 8, height: 8, borderRadius: 4, background: color, display: 'inline-block' }} />
-            {title}
-            {guide && <GuideIcon title={guide.title} steps={guide.steps} />}
-          </Space>
-        }
-        extra={showSwitch && <Switch size="small" checked={configured ? enabled : false} disabled={!configured} loading={busy === 'notify-save'} onChange={toggle} />}
-      >
-        {/* 状态/配置信息行：所有卡片统一在最上方一行（12px 小字） */}
-        <div className="channel-status">
-          {statusLine || (editing ? null : <Space size={6}>{channelStatusTag(enabled)}{summary && <Typography.Text type="secondary" style={{ fontSize: 12, lineHeight: '20px' }} ellipsis={{ tooltip: summary }}>{summary}</Typography.Text>}</Space>)}
-        </div>
-
-        {/* 中间内容：操作按钮或编辑表单（children 模式给微信/飞书用） */}
-        {children
-          ? children({ form, editing, setEditing, enabled })
-          : !editing && (
-            <Space wrap>
-              <Button size="small" icon={<SendIcon />} loading={busy === `test-${name}`} onClick={onTest}>
-                发送测试消息
-              </Button>
-              <Button size="small" icon={<SettingsIcon />} onClick={() => { form.setFieldsValue({ ...view }); setEditing(true) }}>
-                配置
-              </Button>
-            </Space>
-          )}
-
-        {!children && editing && (
-          <Form form={form} layout="vertical" size="small">
-            {fields.map((f) => (
-              <Form.Item key={f.key} name={f.key} label={
-                <span>{f.label}{f.keepEmpty && <Typography.Text type="secondary" style={{ fontSize: 12 }}>（留空不修改）</Typography.Text>}</span>
-              } style={{ marginBottom: 6 }}>
-                {f.secret ? (
-                  <Input.Password placeholder={f.placeholder || '已配置可留空不修改'} autoComplete="new-password" />
-                ) : (
-                  <Input placeholder={f.placeholder} />
-                )}
-              </Form.Item>
-            ))}
-            <Space>
-              <Button type="primary" size="small" loading={busy === 'notify-save'} onClick={save}>保存</Button>
-              <Button size="small" onClick={() => { setEditing(false); form.resetFields() }}>取消</Button>
-            </Space>
-          </Form>
-        )}
-
-        {/* 测试结果：统一固定在卡片底部区域，无提示时占位保持高度一致 */}
-        <div className="channel-result">
-          {testResult && (
-            <Alert
-              type={testResult.ok ? 'success' : 'error'}
-              showIcon
-              message={
-                <Typography.Text
-                  style={{ fontSize: 12, lineHeight: '20px', display: 'block' }}
-                  ellipsis={{ tooltip: testResult.text }}
-                >
-                  {testResult.text}
-                </Typography.Text>
-              }
-              action={
-                <Button type="text" size="small" icon={<CloseIcon />} aria-label="关闭测试结果" onClick={onClearTest} />
-              }
-            />
-          )}
-        </div>
-      </Card>
-    </Col>
-  )
-}
-
-function Notifications({ data, onChanged, msg }) {
-  const cfg = data.config
-  const feishu = cfg.feishu || {}
-  const nch = cfg.notify_channels || {}
-  const ws = nch.feishu_ws || {}
-  const historyRows = [...(data.notification_history || [])].reverse()
-  const confirms = data.card_confirmations || []
-  const [fsForm] = Form.useForm()
-  const [keysRaw, setKeysRaw] = useState('')
-  const [busy, setBusy] = useState('')
-  const [showWechatForm, setShowWechatForm] = useState(false)
-  const [showFeishuForm, setShowFeishuForm] = useState(false)
-  // 每张渠道卡片自持测试结果，互不串扰（不再用全局 testMsg）
-  const [tests, setTests] = useState({})
-  const setTest = (channel, ok, text) => setTests((prev) => ({ ...prev, [channel]: { ok, text } }))
-  const clearTest = (channel) => setTests((prev) => {
-    const next = { ...prev }
-    delete next[channel]
-    return next
-  })
-
-  const saveKeys = async () => {
-    setBusy('keys')
-    try {
-      await api.saveSendKeys(keysRaw)
-      msg.success('SendKey 已保存，daemon 下一轮生效')
-      setKeysRaw('')
-      setTest('wechat', true, 'SendKey 已保存，可发送测试消息验证')
-      onChanged()
-    } catch (e) { msg.error(e.message) } finally { setBusy('') }
-  }
-
-  const testAlert = async () => {
-    const keys = keysRaw.split('\n').map((s) => s.trim()).filter(Boolean)
-    if (keys.length === 0 && cfg.send_keys_count === 0) {
-      msg.error('请先填写至少 1 个 SendKey')
-      return
-    }
-    setBusy('test')
-    try {
-      const r = await api.testAlert(keys.length ? keys : undefined)
-      if (r.success > 0) {
-        setTest('wechat', true, `测试消息发送完成：成功 ${r.success} / 总计 ${r.total}`)
-        msg.success(`测试消息：成功 ${r.success} / ${r.total}`)
-      } else {
-        setTest('wechat', false, '测试消息发送失败，请检查 SendKey 是否正确')
-        msg.error('测试消息发送失败')
-      }
-    } catch (e) { msg.error(e.message) } finally { setBusy('') }
-  }
-
-  const saveFeishu = async () => {
-    const values = fsForm.getFieldsValue()
-    setBusy('feishu-save')
-    try {
-      const r = await api.saveFeishu({
-        app_id: values.app_id || '',
-        app_secret: values.app_secret || '',
-        receiver: values.receiver || '',
-      })
-      msg.success(r.message || '飞书配置已保存')
-      fsForm.resetFields()
-      onChanged()
-    } catch (e) { msg.error(e.message) } finally { setBusy('') }
-  }
-
-  const sendTestFeishu = async () => {
-    const values = fsForm.getFieldsValue()
-    setBusy('feishu-test')
-    try {
-      const r = await api.testFeishu({
-        app_id: values.app_id || '',
-        app_secret: values.app_secret || '',
-        receiver: values.receiver || '',
-      })
-      if (r.success) {
-        msg.success('测试卡片已发送，请到飞书点击按钮验证确认回执')
-        setTest('feishu', true, '测试卡片已发送，请到飞书点击按钮验证确认回执')
-      } else {
-        msg.error(r.error || '测试消息发送失败')
-        setTest('feishu', false, `发送失败：${r.error || '未知错误'}`)
-      }
-    } catch (e) { msg.error(e.message) } finally { setBusy('') }
-  }
-
-  const saveNotify = async (payload) => {
-    setBusy('notify-save')
-    try {
-      await api.saveNotifyChannels(payload)
-      onChanged()
-    } catch (e) { msg.error(e.message) } finally { setBusy('') }
-  }
-
-  const testChannel = async (channel, label) => {
-    setBusy(`test-${channel}`)
-    try {
-      const r = await api.testNotifyChannel(channel)
-      if (r.success) {
-        msg.success(`${label} 测试消息已发送${channel === 'feishu' ? '，可在飞书点击卡片按钮验证确认回执' : ''}`)
-        setTest(channel, true, r.message_id ? `${label}：${r.message}（${r.message_id}）` : `${label}：${r.message || '已发送'}`)
-        onChanged()
-      } else {
-        msg.error(r.error || `${label} 测试发送失败`)
-        setTest(channel, false, `${label}：${r.error || '发送失败'}`)
-      }
-    } catch (e) { msg.error(e.message) } finally { setBusy('') }
-  }
-
-  /* 每张渠道卡片标题旁「?」的配置教学步骤（hover 查看，可关闭） */
-  const guides = {
-    wechat: {
-      title: '微信推送（Server酱）配置步骤',
-      steps: [
-        { title: '打开 Server酱官网', description: '浏览器访问 sct.ftqq.com，用微信扫码登录' },
-        { title: '复制 SendKey', description: '在「SendKey」页复制 SCT 开头的一串字符' },
-        { title: '粘贴到输入框', description: '支持每行一个，多个微信号可各配一个' },
-        { title: '保存并验证', description: '点击「保存并验证」' },
-        { title: '发送测试消息', description: '微信收到即绑定成功，后续低价与告警自动推送' },
-      ],
-    },
-    feishu: {
-      title: '飞书机器人 + 加急卡片确认配置步骤',
-      steps: [
-        { title: '创建企业自建应用', description: '登录 open.feishu.cn 开发者后台 → 创建企业自建应用' },
-        { title: '添加机器人能力', description: '应用功能 → 机器人 → 启用' },
-        { title: '开通权限并发布', description: '权限管理开通 im:message:send_as_bot、im:message:urgent_app 等，发布版本并等待审核通过' },
-        { title: '事件订阅选长连接', description: '事件与回调 → 长连接模式，无需公网回调地址' },
-        { title: '复制凭证', description: '「凭证与基础信息」中复制 App ID / App Secret；接收人填你的飞书邮箱或 ou_ 开头的 OpenID' },
-        { title: '保存并测试', description: '填入表单保存；「发送测试消息」默认发确认卡片，到飞书点按钮验证回执' },
-      ],
-    },
-    wecom: {
-      title: '企业微信（自建应用）配置步骤',
-      steps: [
-        { title: '创建自建应用', description: '登录 work.weixin.qq.com 管理后台 → 应用管理 → 自建 → 创建应用' },
-        { title: '获取企业ID', description: '「我的企业」→ 企业信息 → 企业ID（corp_id，ww 开头）' },
-        { title: '获取 AgentId 与 Secret', description: '进入自建应用详情页：AgentId 直接可见，点「查看」获取 Secret' },
-        { title: '填写接收人 UserID', description: '通讯录中成员的 UserID（如 ZhangSan），需在应用可见范围内' },
-        { title: '保存并发送测试', description: '保存后点「发送测试消息」，企业微信收到即成功' },
-      ],
-    },
-    dingtalk: {
-      title: '钉钉群机器人配置步骤',
-      steps: [
-        { title: '添加自定义机器人', description: '打开目标钉钉群 → 群设置 → 智能群助手 → 添加机器人 → 自定义' },
-        { title: '复制 Webhook', description: '添加完成后复制 Webhook 地址（含 access_token）' },
-        { title: '安全设置：加签（可选）', description: '若开启加签，复制密钥填入「加签密钥」' },
-        { title: '保存并发送测试', description: '保存后点「发送测试消息」，群内收到即成功' },
-      ],
-    },
-    bark: {
-      title: 'iOS · Bark 配置步骤',
-      steps: [
-        { title: '安装 Bark', description: 'App Store 搜索 Bark 安装并打开' },
-        { title: '复制设备 Key', description: 'App 首页即为设备 Key（形如 https://api.day.app/XXXXXXXX）' },
-        { title: '自建服务器（可选）', description: '使用自建 Bark 服务时填入 server 地址，默认 https://api.day.app' },
-        { title: '保存并发送测试', description: '保存后点「发送测试消息」，手机收到即成功' },
-      ],
-    },
-    ntfy: {
-      title: '安卓 · ntfy 配置步骤',
-      steps: [
-        { title: '订阅主题', description: '安装 ntfy 客户端，订阅一个自定义主题名' },
-        { title: '填写主题与服务器', description: 'Topic 填订阅的主题名；server 默认 https://ntfy.sh，自建可改' },
-        { title: '保存并发送测试', description: '保存后点「发送测试消息」，手机收到即成功' },
-      ],
-    },
-    wechat_bot: {
-      title: '企业微信机器人配置步骤',
-      steps: [
-        { title: '这是个人提醒', description: '消息发到接收人的单聊，不发群' },
-        { title: '填写机器人 ID 和 Secret', description: '机器人 ID 是 Bot ID。Secret 是调用密钥，和 WECOM_BOT_SECRET 是同一个' },
-        { title: '填写接收人', description: '填自己的英文名，例如 kaijundeng' },
-        { title: '先跟机器人说过话', description: '接收人需要先在单聊里给机器人发过消息，它才能主动推送' },
-        { title: '保存并发送测试', description: '保存后打开开关，点「发送测试消息」。单聊收到即成功' },
-      ],
-    },
-    email: {
-      title: '邮件提醒配置步骤',
-      steps: [
-        { title: '打开邮箱 SMTP', description: '在邮箱设置里开启 SMTP，并生成授权码。填授权码，不要填登录密码' },
-        { title: '填写服务器', description: 'QQ 邮箱 smtp.qq.com 端口 465；163 邮箱 smtp.163.com 端口 465' },
-        { title: '填写收发地址', description: '登录账号可以只填邮箱名。发件人填完整邮箱。收件人可填多个，用逗号分开' },
-        { title: '保存并发送测试', description: '保存后点「发送测试消息」，收件箱收到即成功' },
-      ],
-    },
-  }
-
-  const channelCards = [
-    {
-      name: 'wechat', title: '微信公众号（『方糖』服务号）', color: '#07c160',
-      view: cfg.wechat || {}, showSwitch: true, configured: cfg.send_keys_count > 0,
-      guide: guides.wechat,
-      statusLine: (
-        <Space size={6}>
-          <Tag color={cfg.send_keys_count > 0 ? 'green' : 'orange'}>
-            {cfg.send_keys_count > 0 ? `已绑定 ${cfg.send_keys_count} 个` : '未配置'}
-          </Tag>
-        </Space>
-      ),
-      children: () => (
-        <>
-          {cfg.send_keys_count > 0 && !showWechatForm ? (
-            <Space wrap>
-              <Button size="small" icon={<SendIcon />} loading={busy === 'test'} onClick={testAlert}>发送测试消息</Button>
-              <Button size="small" icon={<SettingsIcon />} onClick={() => setShowWechatForm(true)}>重新配置</Button>
-            </Space>
-          ) : (
-            <>
-              {cfg.send_keys_count === 0 && (
-                <Steps
-                  direction="vertical"
-                  size="small"
-                  current={5}
-                  items={guides.wechat.steps}
-                  style={{ marginBottom: 10 }}
-                />
-              )}
-              <Input.TextArea
-                rows={3}
-                placeholder="每行粘贴一个 SendKey，例如 SCT123..."
-                value={keysRaw}
-                onChange={(e) => setKeysRaw(e.target.value)}
-                style={{ fontSize: 12 }}
-              />
-              <Space wrap style={{ marginTop: 8 }}>
-                <Button type="primary" size="small" icon={<SendIcon />} loading={busy === 'keys'} onClick={saveKeys}>保存并验证</Button>
-                <Button size="small" icon={<SendIcon />} loading={busy === 'test'} onClick={testAlert}>发送测试消息</Button>
-                {cfg.send_keys_count > 0 && (
-                  <Button size="small" onClick={() => { setShowWechatForm(false); setKeysRaw('') }}>收起</Button>
-                )}
-              </Space>
-            </>
-          )}
-        </>
-      ),
-    },
-    {
-      name: 'wechat_bot', title: '企业微信机器人', color: '#1aad19',
-      view: nch.wechat_bot || {}, guide: guides.wechat_bot,
-      configured: !!(nch.wechat_bot?.bot_id && nch.wechat_bot?.secret && nch.wechat_bot?.chat_id),
-      fields: [
-        { key: 'bot_id', label: '机器人 ID', placeholder: '智能机器人的 Bot ID', keepEmpty: true, secret: true },
-        { key: 'secret', label: 'Secret', placeholder: '调用密钥，留空不修改', keepEmpty: true, secret: true },
-        { key: 'chat_id', label: '接收人', placeholder: '个人英文名，例如 kaijundeng。只发单聊' },
-      ],
-    },
-    {
-      name: 'email', title: '邮件', color: '#d48806',
-      view: nch.email || {}, guide: guides.email,
-      configured: !!(nch.email?.host && nch.email?.password && nch.email?.receiver && (nch.email?.sender || nch.email?.username)),
-      fields: [
-        { key: 'host', label: 'SMTP 服务器', placeholder: '如 smtp.qq.com' },
-        { key: 'port', label: '端口', placeholder: '465' },
-        { key: 'username', label: '登录账号', placeholder: 'SMTP 登录名，如 kedreamix' },
-        { key: 'password', label: '授权码', keepEmpty: true, secret: true },
-        { key: 'sender', label: '发件人', placeholder: '完整邮箱，如 name@qq.com' },
-        { key: 'receiver', label: '收件人', placeholder: '多个地址用逗号分开' },
-      ],
-    },
-    {
-      name: 'feishu', title: '飞书', color: '#3370ff',
-      view: feishu, showSwitch: true, configured: !!feishu.configured,
-      guide: guides.feishu,
-      statusLine: (
-        <Space size={6}>
-          {feishu.configured ? (
-            <Tooltip title={
-              <div style={{ fontSize: 12, lineHeight: 1.8 }}>
-                <div>App ID：{feishu.app_id}</div>
-                <div>接收人：{feishu.receiver || '—'}</div>
-                <div>App Secret 已设置（不回显）</div>
-                <div>长连接事件 {ws.event_count || 0} 次{ws.last_event_ts ? `，最近 ${formatTs(ws.last_event_ts)}` : ''}</div>
-              </div>
-            }>
-              <Tag color="green" style={{ cursor: 'help' }}>已配置</Tag>
-            </Tooltip>
-          ) : feishu.has_secret ? (
-            <Tag color="orange">配置不完整</Tag>
-          ) : (
-            <Tag color="orange">未配置</Tag>
-          )}
-          {wsStateTag(ws)}
-        </Space>
-      ),
-      children: () => (feishu.configured && !showFeishuForm ? (
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-          <Space wrap>
-            <Button size="small" icon={<SendIcon />} loading={busy === 'test-feishu'} onClick={() => testChannel('feishu', '飞书')}>发送测试消息</Button>
-            <Button size="small" icon={<SettingsIcon />} onClick={() => setShowFeishuForm(true)}>重新配置</Button>
-          </Space>
-          <Space size={4}>
-            <Tooltip title="低价提醒默认应用内加急（免费）；关闭后仅普通推送">
-              <Typography.Text type="secondary" style={{ fontSize: 12, cursor: 'help' }}>默认加急</Typography.Text>
-            </Tooltip>
-            <Switch size="small" checked={!!feishu.urgent_enabled} loading={busy === 'notify-save'} onChange={(v) => saveNotify({ feishu: { urgent_enabled: v } })} />
-          </Space>
-        </div>
-      ) : (
-        <>
-          {!feishu.configured && (
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginBottom: 8, fontSize: 12 }}
-              message={
-                <span style={{ fontSize: 12 }}>
-                  首次使用按标题旁「<QuestionIcon size={12} style={{ verticalAlign: -2 }} />」完成开放平台建应用/加机器人/权限/长连接；完整图文
-                  <Typography.Text code>docs/notify_channels_guide.md</Typography.Text>。
-                </span>
-              }
-            />
-          )}
-          <Form form={fsForm} layout="vertical" size="small">
-            <Form.Item name="app_id" label="App ID" style={{ marginBottom: 6 }}>
-              <Input placeholder="cli_ 开头；已配置可留空不修改" style={{ fontSize: 12 }} />
-            </Form.Item>
-            <Form.Item name="app_secret" label="App Secret" style={{ marginBottom: 6 }}>
-              <Input.Password placeholder="已配置可留空不修改（不会回显）" autoComplete="new-password" style={{ fontSize: 12 }} />
-            </Form.Item>
-            <Form.Item name="receiver" label="接收人" style={{ marginBottom: 6 }}>
-              <Input placeholder="你的飞书邮箱，或 ou_ 开头的 OpenID" style={{ fontSize: 12 }} />
-            </Form.Item>
-          </Form>
-          <Space wrap>
-            <Button type="primary" size="small" loading={busy === 'feishu-save'} onClick={saveFeishu} icon={<SendIcon />}>保存配置</Button>
-            <Button size="small" icon={<SendIcon />} loading={busy === 'feishu-test'} onClick={sendTestFeishu}>发送测试消息</Button>
-            {feishu.configured && (
-              <Button size="small" onClick={() => { setShowFeishuForm(false); fsForm.resetFields() }}>收起</Button>
-            )}
-          </Space>
-        </>
-      )),
-    },
-    {
-      name: 'wecom', title: '企业微信', color: '#0082ef',
-      view: nch.wecom || {}, guide: guides.wecom,
-      configured: !!(nch.wecom?.corp_id && nch.wecom?.agent_id && nch.wecom?.user_id && nch.wecom?.secret),
-      fields: [
-        { key: 'corp_id', label: '企业ID', placeholder: 'ww 开头', secret: true },
-        { key: 'agent_id', label: '应用 AgentId', secret: true },
-        { key: 'secret', label: '应用 Secret', keepEmpty: true, secret: true },
-        { key: 'user_id', label: '成员 UserID', placeholder: '接收人，如 ZhangSan', secret: true },
-      ],
-    },
-    {
-      name: 'dingtalk', title: '钉钉', color: '#2a9df4',
-      view: nch.dingtalk || {}, guide: guides.dingtalk, configured: !!nch.dingtalk?.webhook,
-      fields: [
-        { key: 'webhook', label: 'Webhook 地址', placeholder: 'https://oapi.dingtalk.com/robot/send?access_token=...', secret: false },
-        { key: 'secret', label: '加签密钥（可选）', keepEmpty: true, secret: true },
-      ],
-    },
-    {
-      name: 'bark', title: 'iOS · Bark', color: '#f3a933',
-      view: nch.bark || {}, guide: guides.bark, configured: !!nch.bark?.device_key,
-      fields: [
-        { key: 'device_key', label: '设备 Key', keepEmpty: true, secret: true },
-        { key: 'server', label: '服务地址', placeholder: '默认 https://api.day.app，自建可改' },
-      ],
-    },
-    {
-      name: 'ntfy', title: '安卓 · ntfy', color: '#17b26a',
-      view: nch.ntfy || {}, guide: guides.ntfy, configured: !!nch.ntfy?.topic,
-      fields: [
-        { key: 'topic', label: '主题 Topic', keepEmpty: true, secret: true },
-        { key: 'server', label: '服务器地址', placeholder: '默认 https://ntfy.sh，自建可改' },
-      ],
-    },
-  ]
-
-  const historyColumns = [
-    { title: '时间', dataIndex: 'ts', width: 160, render: (v) => formatTs(v) },
-    { title: '渠道', dataIndex: 'channel_label', width: 110 },
-    { title: '级别', dataIndex: 'level', width: 90, render: (v) => (v === 'critical' ? <Tag color="red">加急/阻断</Tag> : v === 'important' ? <Tag color="blue">重要</Tag> : <Tag>{v}</Tag>) },
-    { title: '标题', dataIndex: 'title', ellipsis: true },
-    { title: '结果', dataIndex: 'ok', width: 90, render: (v) => (v ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag>) },
-    { title: '说明/错误', dataIndex: 'error', ellipsis: true, render: (v) => (v ? <Typography.Text type="danger" style={{ fontSize: 12 }}>{v}</Typography.Text> : <Typography.Text type="secondary" style={{ fontSize: 12 }}>—</Typography.Text>) },
-  ]
-
-  const confirmColumns = [
-    { title: '时间', dataIndex: 'ts', width: 160, render: (v) => formatTs(v) },
-    { title: '操作人', dataIndex: 'operator', width: 120 },
-    { title: '操作', dataIndex: 'confirmed', width: 100, render: (v) => (v ? <Tag color="green">确认已处理</Tag> : <Tag>忽略</Tag>) },
-    { title: '消息', dataIndex: 'message_id', ellipsis: true, render: (v) => <span className="mono" style={{ fontSize: 12 }}>{v}</span> },
-    { title: '说明', dataIndex: 'note', ellipsis: true, render: (v) => v || '—' },
-  ]
-
-  return (
-    <div>
-      {/* 通知渠道：卡片统一样式，标题旁「?」为配置教学 */}
-      <Card
-        style={{ marginBottom: 16 }}
-        title={<Space><NotifyIcon style={{ color: 'var(--color-primary)' }} />通知渠道</Space>}
-      >
-        <Row gutter={[16, 16]} align="stretch">
-          {channelCards.slice().sort((a, b) => Number(b.configured) - Number(a.configured)).map((c) => (
-            <ChannelCard
-              key={c.name}
-              name={c.name}
-              title={c.title}
-              color={c.color}
-              view={c.view}
-              fields={c.fields}
-              busy={busy}
-              msg={msg}
-              onSave={saveNotify}
-              onTest={() => testChannel(c.name, c.title)}
-              guide={c.guide}
-              showSwitch={c.showSwitch}
-              configured={c.configured}
-              statusLine={c.statusLine}
-              testResult={tests[c.name]}
-              onClearTest={() => clearTest(c.name)}
-            >
-              {c.children}
-            </ChannelCard>
-          ))}
-        </Row>
-      </Card>
-
-      {/* 通知历史：独立成块，可往下滚动多行 */}
-      <Card
-        style={{ marginBottom: 16 }}
-        size="small"
-        title={<Space><HistoryIcon />通知历史（最近 {historyRows.length} 条）</Space>}
-        extra={
-          <Popconfirm
-            title="清除通知历史？"
-            description="旧记录将归档为 notification_history.jsonl.bak（可找回）。"
-            okText="清除"
-            cancelText="取消"
-            okButtonProps={{ danger: true }}
-            onConfirm={async () => {
-              try {
-                const r = await api.clearNotifyHistory()
-                msg.success(r.message || '通知历史已清除')
-                onChanged()
-              } catch (e) { msg.error(e.message) }
-            }}
-          >
-            <Button size="small" danger icon={<DeleteIcon />}>清除</Button>
-          </Popconfirm>
-        }
-      >
-        <Table
-          rowKey={(_, i) => i}
-          size="small"
-          pagination={false}
-          dataSource={historyRows}
-          columns={historyColumns}
-          scroll={{ y: 320, x: 'max-content' }}
-          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无通知历史，发送测试或触发提醒后出现在这里" /> }}
-        />
-      </Card>
-
-      {/* 飞书加急卡片确认回执：独立成块，可往下滚动多行 */}
-      <Card
-        size="small"
-        title={<Space><NotifyIcon />飞书加急卡片确认回执（最近 {confirms.length} 条）</Space>}
-      >
-        <Table
-          rowKey={(_, i) => i}
-          size="small"
-          pagination={false}
-          dataSource={confirms.slice().reverse()}
-          columns={confirmColumns}
-          scroll={{ y: 320, x: 'max-content' }}
-          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无回执：在飞书点卡片「确认已处理 / 忽略」后记录在这里" /> }}
-        />
-      </Card>
     </div>
   )
 }
@@ -3583,11 +2569,14 @@ function OriginField({ value, onOpen, onChange }) {
   )
 }
 
-function DateStrip({ mode, date, onPick, days = 30 }) {
+function DateStrip({ mode, date, onPick }) {
   const ref = useRef(null)
   const [edge, setEdge] = useState({ left: true, right: false })
   const start = dayjs().startOf('day')
-  const list = Array.from({ length: days }, (_, i) => start.add(i, 'day'))
+  // 一天一格排到航季结束。换季就在眼前时把下一航季也排上，避免只剩几天可滑。
+  const last = onewayStripLastDay(start)
+  const total = Math.max(1, last.diff(start, 'day') + 1)
+  const list = Array.from({ length: total }, (_, i) => start.add(i, 'day'))
   const picked = mode === 'single' && date ? date.format('YYYY-MM-DD') : ''
   const syncEdge = () => {
     const box = ref.current
@@ -3684,11 +2673,6 @@ function DateStrip({ mode, date, onPick, days = 30 }) {
             </button>
           )
         })}
-        <button type="button" className={`date-strip-day is-any${mode === 'range' ? ' is-on' : ''}`} onClick={() => onPick('range')}>
-          <span className="date-strip-week">按区间</span>
-          <span className="date-strip-num">区间</span>
-          <span className="date-strip-md">选一段日期</span>
-        </button>
       </div>
       <button type="button" className="date-strip-nav" aria-label="往后看日期" disabled={edge.right} onClick={() => nudge(1)}>
         <ChevronRightIcon size={16} />
@@ -4178,6 +3162,16 @@ function flightSeasonInfo(today = dayjs()) {
   if (day.isBefore(winter)) return { name: `${year}夏秋航季`, next: winter, nextName: '冬春', days: winter.diff(day, 'day'), tone: 'summer' }
   const nextSummer = lastSundayOf(year + 1, 2)
   return { name: `${year}冬春航季`, next: nextSummer, nextName: '夏秋', days: nextSummer.diff(day, 'day'), tone: 'winter' }
+}
+
+/* 单程日期条的最后一天：当前航季结束前一天。
+   离换季不足 45 天时继续排到下一航季结束，否则滑不了几天又到头。 */
+function onewayStripLastDay(today = dayjs().startOf('day')) {
+  const day = today.startOf('day')
+  const nextChange = flightSeasonInfo(day).next.startOf('day')
+  const seasonAfter = flightSeasonInfo(nextChange).next.startOf('day')
+  const end = nextChange.diff(day, 'day') < 45 ? seasonAfter : nextChange
+  return end.subtract(1, 'day')
 }
 
 function greatCircleKm(a, b) {
@@ -5679,7 +4673,7 @@ function removeFlightRecent(item) {
   return writeFlightRecent(loadFlightRecent().filter((row) => recentKey(row) !== key))
 }
 
-function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightDetail, defaultMail = '' }) {
+function FlightQuery({ msg, onChanged, onGo, priceQuery, releaseCutoff = '2026-12-31', tierBlockRules, flightDetail, defaultMail = '' }) {
   const [form] = Form.useForm()
   const [recent, setRecent] = useState(() => loadFlightRecent())
   const [loading, setLoading] = useState(false)
@@ -5791,6 +4785,9 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
   // 「只能查/显示当天及以后」：日期选择器禁过去；转监控弹窗的日期池同样剔除过去日期
   const todayStr = dayjs().format('YYYY-MM-DD')
   const todayDisabled = (d) => d.isBefore(dayjs(), 'day')
+  // 单程日期条的最后一天，日历也不能选出条外的日子
+  const onewayLastDay = onewayStripLastDay()
+  const onewayDayDisabled = (d) => todayDisabled(d) || d.isAfter(onewayLastDay, 'day')
 
   // 联动选项：watch 筛选条件（含日期模式），debounce 250ms 调 /api/flights/options
   useEffect(() => {
@@ -6683,13 +5680,15 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
   })
 
   const pickOnewayDate = (mode, day) => {
-    form.setFieldsValue(mode === 'single' ? { dateMode: 'single', date: day } : { dateMode: mode })
-    if (mode !== 'range' && routeOrigins.length) form.submit()
+    form.setFieldsValue(mode === 'single'
+      ? { dateMode: 'single', date: day }
+      : { dateMode: 'none', date: null })
+    if (routeOrigins.length) form.submit()
   }
 
   const shiftOnewayDay = (step) => {
     const next = (form.getFieldValue('date') || dayjs()).add(step, 'day')
-    if (next.isBefore(dayjs(), 'day')) return
+    if (next.isBefore(dayjs(), 'day') || next.isAfter(onewayLastDay, 'day')) return
     pickOnewayDate('single', next)
   }
 
@@ -6732,6 +5731,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
               if (last?.to) form.setFieldsValue({ to: matchOriginLabel(linkOpts.to, last.to) || last.to })
             }
             if (key === 'round') form.setFieldsValue({ dateMode: 'range' })
+            else if (key === 'oneway' && form.getFieldValue('dateMode') === 'range') form.setFieldsValue({ dateMode: 'none', date: null })
             else if (!(form.getFieldValue('dateRange')?.length === 2)) form.setFieldsValue({ dateMode: 'none' })
           }}
           items={[
@@ -6864,12 +5864,16 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
               <Col span={24}>
                 {(() => {
                   const season = flightSeasonInfo()
+                  const cutoff = dayjs(releaseCutoff || '2026-12-31')
+                  const showCutoff = cutoff.isValid() && dayjs().isBefore(cutoff.add(1, 'day'), 'day')
+                  const cutoffLabel = showCutoff ? cutoff.format('M.DD') : '12.31'
+                  const nextMonth = showCutoff ? cutoff.add(1, 'day').month() + 1 : 1
                   return (
                     <div className={`season-strip is-${season.tone}${season.days <= 30 ? ' is-soon' : ''}`}>
                       <span>
                         当前 <b>{season.name}</b> · 距 {season.next.format('M-D')} {season.nextName}换季还有 <b>{season.days}</b> 天
                         {season.days <= 30 ? '，换季后的周末按新航季班期扫描' : ''}
-                        {dayjs().isBefore('2027-01-01') ? '。目前海航放票到 12.31，所以 1 月份暂时也可能约不了' : ''}
+                        {showCutoff ? `。目前海航开启抢票至 ${cutoffLabel}，${nextMonth} 月起暂未开启抢票（监控会自动探测并在放票后更新）` : ''}
                       </span>
                       <span className="season-strip-tag">{season.tone === 'summer' ? '夏秋' : '冬春'}</span>
                     </div>
@@ -7031,7 +6035,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
                 {queryKind === 'oneway' && (
                   <DateStrip mode={dateMode} date={watch?.date} onPick={pickOnewayDate} />
                 )}
-                <div className="date-nav" style={{ display: queryKind === 'oneway' && dateMode === 'single' ? undefined : 'none' }}>
+                <div className="date-nav" style={{ display: queryKind === 'oneway' ? undefined : 'none' }}>
                   <Button icon={<ChevronLeftIcon size={12} />} disabled={!watch?.date || !watch.date.isAfter(dayjs(), 'day')} onClick={() => shiftOnewayDay(-1)}>前一天</Button>
                   <Form.Item name="date" noStyle>
                     <DatePicker
@@ -7039,13 +6043,13 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
                       allowClear={false}
                       format={(v) => `${v.format('YYYY-MM-DD')} ${cnWeekday(v.format('YYYY-MM-DD'))}`}
                       placeholder="选择单日"
-                      disabledDate={todayDisabled}
+                      disabledDate={onewayDayDisabled}
                       onChange={(v) => v && pickOnewayDate('single', v)}
                     />
                   </Form.Item>
-                  <Button onClick={() => shiftOnewayDay(1)}>后一天<ChevronRightIcon size={12} /></Button>
+                  <Button disabled={!!watch?.date && !watch.date.isBefore(onewayLastDay, 'day')} onClick={() => shiftOnewayDay(1)}>后一天<ChevronRightIcon size={12} /></Button>
                 </div>
-                <Space direction="vertical" size={8} style={{ width: '100%', display: queryKind === 'round' || dateMode === 'range' ? undefined : 'none' }}>
+                <Space direction="vertical" size={8} style={{ width: '100%', display: queryKind === 'round' ? undefined : 'none' }}>
                   <div className="date-inputs">
                     <Form.Item name="dateRange" noStyle>
                       <DatePicker.RangePicker style={{ width: 260 }} disabledDate={todayDisabled} />
@@ -7073,9 +6077,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
                     })}
                   </div>
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {queryKind === 'round'
-                      ? '从下周末起。去程和回程都按这段日期筛选，航班号只筛去程。'
-                      : '区间只筛选这段日期里能飞的班，不查实时价格。'}
+                    从下周末起。去程和回程都按这段日期筛选，航班号只筛去程。
                   </Typography.Text>
                 </Space>
               </Form.Item>
@@ -7095,7 +6097,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
             <Col xs={24} lg={queryKind === 'oneway' ? 18 : 6}>
               <Form.Item label=" " colon={false}>
                 <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
-                  <Button onClick={() => { form.resetFields(); if (queryKind === 'round') form.setFieldsValue({ dateMode: 'range' }); setResult(null); setWeekendCards(null); setWeekendMeta(null); setWeekendOrigins([]); setErrMsg(''); setPrices(null); setStopsInfo(null); setTimesMap(null); setSeatsInfo(null); setPriceTried(false); setSelKeys([]) }}>清空</Button>
+                  <Button onClick={() => { form.resetFields(); if (queryKind === 'round') form.setFieldsValue({ dateMode: 'range' }); else if (queryKind === 'oneway') form.setFieldsValue({ dateMode: 'none', date: null }); setResult(null); setWeekendCards(null); setWeekendMeta(null); setWeekendOrigins([]); setErrMsg(''); setPrices(null); setStopsInfo(null); setTimesMap(null); setSeatsInfo(null); setPriceTried(false); setSelKeys([]) }}>清空</Button>
                   <Button type="primary" htmlType="submit" loading={loading} icon={<CompassIcon />}>{queryKind === 'weekend' ? weekendScanLabel(weekendOrigins) : '查询'}</Button>
                 </Space>
               </Form.Item>
@@ -7536,53 +6538,6 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
   )
 }
 
-/* ================= 历史日志 ================= */
-function History({ data, autoRefresh, setAutoRefresh, msg, refresh }) {
-  const [clearBusy, setClearBusy] = useState('')
-
-  const doClearLog = async () => {
-    setClearBusy('log')
-    try {
-      const r = await api.clearLog()
-      msg.success(r.message || '运行日志已清除')
-      refresh()
-    } catch (e) { msg.error(e.message) } finally { setClearBusy('') }
-  }
-
-  return (
-    <div>
-      <Card
-        title="运行日志（最近 200 行）"
-        extra={
-          <Space>
-            <Popconfirm
-              title="清除运行日志？"
-              description="原日志将归档为 .bak 文件（可找回）。"
-              okText="清除"
-              cancelText="取消"
-              okButtonProps={{ danger: true }}
-              onConfirm={doClearLog}
-            >
-              <Button size="small" danger loading={clearBusy === 'log'} icon={<DeleteIcon />}>清除</Button>
-            </Popconfirm>
-            <Typography.Text type="secondary">自动刷新</Typography.Text>
-            <Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} />
-          </Space>
-        }
-      >
-        <div className="log-view">
-          {[...(data.logs || [])].reverse().map((line, i) => {
-            const cls = line.includes('错误') || line.includes('[阻断]') || line.includes('E00001') ? 'err'
-              : line.includes('警告') || line.includes('退避') ? 'warn' : ''
-            return <div key={i} className={cls}>{line}</div>
-          })}
-          {(data.logs || []).length === 0 && <div className="muted">暂无日志输出。</div>}
-        </div>
-      </Card>
-    </div>
-  )
-}
-
 /* ================= App ================= */
 // 全局主题：基于 antd 开源设计 token 的现代化定制（主色/圆角/控件密度），替代默认观感
 const appTheme = (dark) => ({
@@ -7601,7 +6556,6 @@ const appTheme = (dark) => ({
   },
   components: {
     Button: { fontWeight: 600 },
-    Card: { borderRadiusLG: 14 },
     Card: { borderRadiusLG: 12 },
     Menu: { itemBorderRadius: 8, itemHeight: 40, horizontalItemBorderRadius: 8 },
     Table: { headerBg: dark ? '#1D2630' : '#F1F4F9' },
@@ -7725,6 +6679,7 @@ export default function App() {
             <FlightQuery
               msg={msg}
               priceQuery={data?.config?.price_query}
+              releaseCutoff={data?.config?.release_cutoff_date || '2026-12-31'}
               onChanged={refresh}
               onGo={setTab}
               tierBlockRules={tierBlockRules}

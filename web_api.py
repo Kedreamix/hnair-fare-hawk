@@ -31,6 +31,7 @@ from app import (  # noqa: E402
     LOG_PATH,
     add_task,
     add_tasks_batch,
+    advance_release_cutoff,
     clear_notify_history,
     clear_price_history,
     clear_run_log,
@@ -51,6 +52,7 @@ from app import (  # noqa: E402
     save_price_query,
     save_proxy,
     save_polling,
+    save_release_cutoff,
     save_send_keys,
     set_status,
     set_task_enabled,
@@ -250,6 +252,8 @@ def _sanitize_config(config: Dict[str, Any]) -> Dict[str, Any]:
             "enabled": bool(config.get("price_query", {}).get("enabled", True)),
             "min_interval": int(config.get("price_query", {}).get("min_interval", 8) or 8),
         },
+        "release_cutoff_date": str(config.get("release_cutoff_date") or DEFAULT_CONFIG.get("release_cutoff_date", "2026-12-31")).strip(),
+        "unreleased_probe_minutes": int(config.get("unreleased_probe_minutes") or DEFAULT_CONFIG.get("unreleased_probe_minutes", 60)),
         # 飞书渠道：AppID 完整回传（仅 hover 展示用，非机密；AppSecret 永不回传，receiver 不敏感可展示）
         "feishu": {
             "configured": bool(feishu_app_id and str(feishu.get("app_secret", "") or "").strip()),  # noqa: E501
@@ -266,28 +270,41 @@ def _sanitize_config(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _today_str() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
 def _build_state() -> Dict[str, Any]:
-    from app import TASKS_PATH, read_last_log_lines as _read_logs
+    from app import prune_expired_tasks, read_last_log_lines as _read_logs
 
     config = load_config()
-    with open(TASKS_PATH, "r", encoding="utf-8") as f:
-        raw = f.read().strip()
-    tasks_data = json.loads(raw) if raw else {"tasks": []}
-    tasks = tasks_data.get("tasks", [])
+    today_str = _today_str()
+    tasks = prune_expired_tasks(today=today_str)
+    task_rows = _build_task_rows(tasks, today=today_str)
 
     recent = read_price_history(50)
-    history = read_low_price_history(50)
+    history = read_low_price_history(50, owned_only=True)
     logs = _read_logs(LOG_PATH, line_count=200)
 
-    # 统计仍按文件末尾 50 行计算，概览卡片上的数字含义不变
-    hit_count = sum(1 for r in recent if int(r.get("price") or 0) <= int(
-        _task_target(tasks, r.get("task_id", ""), r.get("date", ""),
-                     r.get("from", ""), r.get("to", ""), r.get("fare_type", ""))
-    )) if recent else 0
+    # 只统计挂在监控任务上的低价。同日其他航班不计入。
+    hit_count = 0
+    for record in recent:
+        if not str(record.get("task_id") or "").strip():
+            continue
+        try:
+            price = int(record.get("price") or 0)
+        except (TypeError, ValueError):
+            continue
+        target = _task_target(
+            tasks, record.get("task_id", ""), record.get("date", ""),
+            record.get("from", ""), record.get("to", ""), record.get("fare_type", ""),
+        )
+        if price <= target:
+            hit_count += 1
 
     return {
         "config": _sanitize_config(config),
-        "tasks": _build_task_rows(tasks),
+        "tasks": task_rows,
         # 多通道通知历史（成功/失败都记录，最多 50 条）
         "notification_history": read_notify_history(50),
         # 飞书加急卡片确认回执（用户在卡片上点「确认已处理/忽略」后的记录）
@@ -313,8 +330,8 @@ def _build_state() -> Dict[str, Any]:
             for r in history
         ],
         "stats": {
-            "task_count": len(tasks),
-            "enabled_count": sum(1 for t in tasks if t.get("enabled", True)),
+            "task_count": len(task_rows),
+            "enabled_count": sum(1 for r in task_rows if r.get("enabled", True)),
             "hit_count_24h": hit_count,
             "history_count": len(recent),
         },
@@ -324,9 +341,10 @@ def _build_state() -> Dict[str, Any]:
 
 
 def _task_group_key(t: Dict[str, Any]) -> str:
-    """任务分组键（与 app.add_tasks_batch 一致的穷举语义）：
+    """任务分组键（与 app._task_key 一致）：
 
-    - 出发|到达|航班号|起飞|到达：不同航班/时刻各自成行；
+    - 出发|到达|航班号|起飞：不同航班或不同起飞各自成行；
+    - 到达时刻不参与分组，避免同一航班到达差几分钟被拆成两条；
     - 无航班号的旧式任务按航线分组（向后兼容）。
     """
     fc = str(t.get("from_code", "") or "").strip().upper()
@@ -336,7 +354,6 @@ def _task_group_key(t: Dict[str, Any]) -> str:
         tc,
         str(t.get("flight_no", "") or "").strip().upper(),
         str(t.get("dep_time", "") or "").strip(),
-        str(t.get("arr_time", "") or "").strip(),
     ])
 
 
@@ -387,15 +404,20 @@ def _weekdays(dates: List[str]) -> List[int]:
     return days
 
 
-def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """任务列表按「出发|到达|航班号|起降时刻」分组合并展示。
+def _build_task_rows(tasks: List[Dict[str, Any]], today: str | None = None) -> List[Dict[str, Any]]:
+    """任务列表按「出发|到达|航班号|起飞时刻」分组合并展示。
 
-    - 同一航班（同航班号且起降时刻相同）的多个监控日期合并成一条（dates 并集、档位并集）；
-    - 一天内不同时间的航班各自独立成行（穷举，不按航线合并）；
+    - 同一航班（同航班号且起飞时刻相同）的多个监控日期合并成一条（dates 并集、档位并集）；
+      到达时刻不同也并在一起，避免同一航班被拆成两条航线；
+    - 一天内不同时间起飞的航班各自独立成行（穷举，不按航线合并）；
     - 快照字段（代表航班/时刻/经停/档位）来自该分组最近一条带快照的任务，
       可被观测库中更新的实时事实（起降时刻/航站楼/经停）覆盖；
-    - ids 为分组下所有底层任务 id，批量启停/删除以此为单位。
+    - ids 为分组下所有底层任务 id，批量启停/删除以此为单位；
+    - today 非空时：自动剔除早于 today 或当日已起飞的过期日期；若分组内所有日期均已过期，则不展示该分组。
     """
+    from app import _parse_today_and_hm, is_task_date_expired
+
+    today_d, now_hm = _parse_today_and_hm(today) if today is not None else ("", "")
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for t in tasks:
         fc = str(t.get("from_code", "") or "").strip().upper()
@@ -410,7 +432,7 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for group in grouped.values():
         from_code = str(group[0]["from_code"]).upper()
         to_code = str(group[0]["to_code"]).upper()
-        dates = sorted({d for t in group for d in expand_task_dates(t)})
+        all_dates = sorted({d for t in group for d in expand_task_dates(t)})
         products = sorted({p for t in group for p in str(t.get("product", "") or "").split("/") if p})
         snap = next((t for t in reversed(group) if t.get("flight_no")), group[0])
         flight_no = str(snap.get("flight_no", "") or "").strip()
@@ -426,7 +448,7 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if flight_no:
             obs = obs_data.get(observations.obs_key(flight_no, from_city, to_city))
             if obs:
-                if observations.observation_matches_weekday({"days": _weekdays(dates)}, obs):
+                if observations.observation_matches_weekday({"days": _weekdays(all_dates)}, obs):
                     if obs.get("dep_time"):
                         dep_time = obs["dep_time"]
                     if obs.get("arr_time"):
@@ -435,11 +457,26 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     stop = obs["stop"]
                 from_terminal = str(obs.get("dep_terminal") or "")
                 to_terminal = str(obs.get("arr_terminal") or "")
+        dates = [
+            d for d in all_dates
+            if not is_task_date_expired(d, dep_time, today_d, now_hm)
+        ] if today_d else all_dates
+        if today_d and all_dates and not dates:
+            continue
+        valid_date_set = set(dates)
         # 旧任务无档位快照时，从底表补一条代表航线的档位（便于展示）
         if not products:
             recs = sediment.query(from_city=from_city, to_city=to_city, limit=1)
             if recs:
                 products = [p for p in str(recs[0].get("product", "") or "").split("/") if p]
+        disabled_dates = sorted({
+            str(d).strip() for t in group for d in (t.get("disabled_dates") or [])
+            if str(d).strip() and (not valid_date_set or str(d).strip() in valid_date_set)
+        })
+        if dates:
+            row_enabled = any(bool(t.get("enabled", True)) for t in group) and bool(valid_date_set - set(disabled_dates))
+        else:
+            row_enabled = any(bool(t.get("enabled", True)) for t in group)
         rows.append({
             "id": group[0].get("id", ""),
             "ids": [t.get("id", "") for t in group],
@@ -487,7 +524,7 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     t.get("notify_email_by_date").items()
                     if isinstance(t.get("notify_email_by_date"), dict) else ()
                 )
-                if str(day).strip() and str(addr).strip()
+                if str(day).strip() and str(addr).strip() and (not valid_date_set or str(day).strip() in valid_date_set)
             },
             "round_pairs": {
                 str(day).strip(): info
@@ -495,12 +532,10 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 for day, info in (
                     t.get("round_pairs").items() if isinstance(t.get("round_pairs"), dict) else ()
                 )
-                if str(day).strip() and isinstance(info, dict)
+                if str(day).strip() and isinstance(info, (dict, list)) and (not valid_date_set or str(day).strip() in valid_date_set)
             },
-            "enabled": any(bool(t.get("enabled", True)) for t in group),
-            "disabled_dates": sorted({
-                str(d).strip() for t in group for d in (t.get("disabled_dates") or []) if str(d).strip()
-            }),
+            "enabled": row_enabled,
+            "disabled_dates": disabled_dates,
             "created_at": min((str(t.get("created_at") or "") for t in group), default=""),
         })
     return rows
@@ -570,6 +605,8 @@ def _serve_static(handler: BaseHTTPRequestHandler, path: str) -> None:
     handler.send_response(200)
     handler.send_header("Content-Type", ctype)
     handler.send_header("Content-Length", str(len(data)))
+    if os.path.basename(full) == "index.html":
+        handler.send_header("Cache-Control", "no-store")
     handler.end_headers()
     handler.wfile.write(data)
 
@@ -794,6 +831,7 @@ class Handler(BaseHTTPRequestHandler):
                         code_to_city_only(to_code),
                         observed_at=date_str,
                     )
+                    advance_release_cutoff(date_str)
                 except Exception:  # noqa: BLE001 观测失败不影响主流程
                     pass
         _send_json(self, 200, {
@@ -886,6 +924,20 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 poll = load_config().get("polling", {})
                 _send_json(self, 200, {"ok": True, "polling": poll})
+            elif path == "/api/release_cutoff":
+                try:
+                    cutoff, mins = save_release_cutoff(
+                        str(data.get("release_cutoff_date") or ""),
+                        data.get("unreleased_probe_minutes"),
+                    )
+                except ValueError as exc:
+                    _send_json(self, 400, {"ok": False, "error": str(exc)})
+                    return
+                _send_json(self, 200, {
+                    "ok": True,
+                    "release_cutoff_date": cutoff,
+                    "unreleased_probe_minutes": mins,
+                })
             elif path == "/api/feishu":
                 self._post_feishu(data)
             elif path == "/api/notify/save":
@@ -1016,8 +1068,8 @@ class Handler(BaseHTTPRequestHandler):
         """批量创建监控任务（从「航线查询」勾选 -> 弹窗二次确认）。
 
         body.items 每项：{from_code, to_code, dates: [YYYY-MM-DD...], product,
-        flight_no, dep_time, arr_time, stop}。穷举语义：不同航班号/起降时刻各自创建
-        独立监控任务；仅同航班号且起降时刻相同时合并日期（dates/档位并集）。
+        flight_no, dep_time, arr_time, stop}。不同航班号或不同起飞时刻各自创建
+        独立监控任务；同航班号且起飞时刻相同时合并日期，到达时刻不同也并入原任务。
         """
         items = data.get("items")
         if not isinstance(items, list) or not items:

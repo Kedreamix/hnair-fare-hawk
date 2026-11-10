@@ -88,6 +88,7 @@ def send_price_alert(
     price: int,
     tiers=None,
     extra: str = "",
+    title: str = "",
 ) -> Dict[str, bool]:
     """发送普通低价提醒（微信 Server酱，desp 支持 Markdown）；extra 为附加说明（如往返另一段价格）。"""
     keys = _normalize_keys(send_keys)
@@ -101,7 +102,7 @@ def send_price_alert(
     from_city_short = code_to_city_only(from_code)
     to_city_short = code_to_city_only(to_code)
 
-    title = f"🎉 {from_city_short}→{to_city_short} {price} 元"
+    alert_title = str(title or "").strip() or f"🎉 {from_city_short}→{to_city_short} {price} 元"
     desp = (
         f"**航班**：{flight}\n\n"
         f"**日期**：{_date_range_str(task)}\n\n"
@@ -116,7 +117,7 @@ def send_price_alert(
         + hna_jump_block(from_code, to_code, str(task.get("date", "") or ""), flight)
     )
     for key in keys:
-        results[key] = _send_serverchan(key, title, desp)
+        results[key] = _send_serverchan(key, alert_title, desp)
 
     return results
 

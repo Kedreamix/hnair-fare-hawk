@@ -7,11 +7,17 @@ import os
 import random
 import time
 from datetime import datetime, time as dt_time, timedelta
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 import portalocker
 
-from app import task_email_for
+from app import (
+    _parse_today_and_hm,
+    advance_release_cutoff,
+    is_task_date_expired,
+    prune_expired_tasks,
+    task_email_for,
+)
 from backend.channels import apply_task_email, build_confirm_card, hna_jump_block, notify_channels
 import backend.feishu_ws as feishu_ws  # noqa: E402
 from backend.fetcher import TokenExpiredError, fetch_price_status
@@ -72,6 +78,9 @@ DEFAULT_CONFIG = {
     "monitor_window": {"start": "07:00", "end": "23:00"},
     # 实时查价开关（防风控）：关闭后 daemon 不再请求海航接口
     "price_query": {"enabled": True, "min_interval": 8},
+    # 海航随心飞当前开启抢票（放票）截止日期：<= 该日期每轮正常监控，> 该日期按低频探测并在放票后自动推进
+    "release_cutoff_date": "2026-12-31",
+    "unreleased_probe_minutes": 60,
     "alert_cooldown": {
         "hours": 1,  # 价格提醒冷却时间（小时），默认1小时
     },
@@ -161,6 +170,8 @@ def load_config() -> Dict[str, Any]:
         config["price_query"] = dict(DEFAULT_CONFIG.get("price_query", {"enabled": True, "min_interval": 8}))
     config["price_query"].setdefault("enabled", True)
     config["price_query"].setdefault("min_interval", 8)
+    config.setdefault("release_cutoff_date", DEFAULT_CONFIG["release_cutoff_date"])
+    config.setdefault("unreleased_probe_minutes", DEFAULT_CONFIG["unreleased_probe_minutes"])
 
     if not isinstance(config["monitor_window"], dict):
         config["monitor_window"] = dict(DEFAULT_CONFIG["monitor_window"])
@@ -297,28 +308,54 @@ def _pair_info(task: Dict[str, Any], day: str) -> Dict[str, str] | None:
     return infos[0] if infos else None
 
 
-def build_query_units(tasks: List[Dict[str, Any]], today: str | None = None) -> List[List[Dict[str, Any]]]:
+def build_query_units(
+    tasks: List[Dict[str, Any]],
+    today: str | None = None,
+    now_hm: str | None = None,
+    release_cutoff: str | None = None,
+    should_probe: Callable[[str], bool] | None = None,
+) -> List[List[Dict[str, Any]]]:
     """把任务展开成本轮要发的请求，并按明确的往返配对分组。
 
     - 每个请求是一个 (出发, 到达, 日期, 档位)，同一请求只发一次，挂上所有关注它的任务；
-    - 早于今天的日期不再查询；
+    - 早于今天的日期或当日已过起飞时间的航班不再查询；
+    - 按抢票开放截止日（release_cutoff，如 '2026-12-31'）分级：
+      * <= release_cutoff 的日期（已开启抢票）：无论距离今天多少天，每轮均正常查询；
+      * > release_cutoff 的日期（待开启抢票）：传入 should_probe 时按低频探测间隔决定本轮是否顺带探测；
     - 只有 round_pairs 能对上另一段（反方向、对方航班、对方日期都在本轮请求里）才放进同一组；
     - 组内先去程后回程。没有配对的请求各自单查；
     - 组按最早日期排序，近的先查。
     """
-    today = today or datetime.now().strftime("%Y-%m-%d")
+    today_str, hm_str = _parse_today_and_hm(today, now_hm)
+    cutoff_str = str(release_cutoff or "").strip()
+    probe_decisions: Dict[str, bool] = {}
     requests_by_key: Dict[tuple, Dict[str, Any]] = {}
     for task in tasks:
         from_code, to_code, fare_type = _task_codes(task)
         if not (from_code and to_code):
             continue
+        dep_time = str(task.get("dep_time") or "").strip()
         for date in expand_dates(task):
-            if _day_gap(today, date) is not None and date < today:
+            if _day_gap(today_str, date) is not None and is_task_date_expired(date, dep_time, today_str, hm_str):
                 continue
+            unreleased = bool(cutoff_str and date > cutoff_str)
+            if unreleased and should_probe is not None:
+                probe_key = f"{from_code}|{to_code}|{date}|{fare_type}"
+                if probe_key not in probe_decisions:
+                    probe_decisions[probe_key] = bool(should_probe(probe_key))
+                if not probe_decisions[probe_key]:
+                    continue
             key = (from_code, to_code, date, fare_type)
             req = requests_by_key.setdefault(
                 key,
-                {"from_code": from_code, "to_code": to_code, "date": date, "fare_type": fare_type, "tasks": []},
+                {
+                    "from_code": from_code,
+                    "to_code": to_code,
+                    "date": date,
+                    "fare_type": fare_type,
+                    "tasks": [],
+                    "unreleased_probe": unreleased,
+                },
             )
             if all(t is not task for t in req["tasks"]):
                 req["tasks"].append(task)
@@ -362,20 +399,21 @@ def build_query_units(tasks: List[Dict[str, Any]], today: str | None = None) -> 
     return units
 
 
-def _companion_text(
+def _companion_status(
     unit: List[Dict[str, Any]],
     req: Dict[str, Any],
     results: Dict[tuple, Dict[str, Any]],
     task: Dict[str, Any] | None = None,
-) -> str:
-    """命中一段时，描述 round_pairs 里那一天的查询结果。没有配对返回空串。"""
+) -> tuple[str, bool, bool]:
+    """命中一段时，描述 round_pairs 里那一天的查询结果，并返回 (描述文本, 是否存在往返配对, 是否双边同时达标)。"""
     task = task or next((item for item in req.get("tasks") or [] if _pair_infos(item, req["date"])), None)
     if not task:
-        return ""
+        return "", False, False
     infos = _pair_infos(task, req["date"])
     if not infos:
-        return ""
+        return "", False, False
     parts = []
+    both_hit = False
     for info in infos:
         mate_from, mate_to = req["to_code"], req["from_code"]
         label = "回程" if info["role"] == "out" else "去程"
@@ -404,9 +442,27 @@ def _companion_text(
         if not item or not isinstance(item.get("price"), int):
             parts.append(f"{head}：{flight} 暂无可兑票")
             continue
-        mark = "也达标 ✅" if owner and item["price"] <= _target_price(owner) else "未达标"
+        mate_ok = bool(
+            owner
+            and item["price"] <= _target_price(owner)
+            and _task_seat_ok(owner, item)
+            and _task_tier_ok(owner, item)
+        )
+        if mate_ok:
+            both_hit = True
+        mark = "也达标 ✅" if mate_ok else "未达标"
         parts.append(f"{head}：{flight} {item['price']} 元（{_seat_summary(item)}，{mark}）")
-    return "；".join(parts)
+    return "；".join(parts), True, both_hit
+
+
+def _companion_text(
+    unit: List[Dict[str, Any]],
+    req: Dict[str, Any],
+    results: Dict[tuple, Dict[str, Any]],
+    task: Dict[str, Any] | None = None,
+) -> str:
+    """命中一段时，描述 round_pairs 里那一天的查询结果。没有配对返回空串。"""
+    return _companion_status(unit, req, results, task)[0]
 
 
 def sleep_with_status_check(seconds: int, check_interval: int) -> None:
@@ -607,7 +663,7 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
     if not (config.get("price_query") or {}).get("enabled", True):
         append_log("实时查价已关闭（防风控），本轮跳过价格查询；可在「监控管理」重新开启。")
         return False
-    all_tasks = load_tasks()
+    all_tasks = prune_expired_tasks()
     tasks = [task for task in all_tasks if task.get("enabled", True)]
     if not tasks:
         append_log("当前没有监控任务。")
@@ -636,9 +692,33 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
             continue
         runnable.append(task)
 
-    units = build_query_units(runnable)
+    release_cutoff = str(config.get("release_cutoff_date") or DEFAULT_CONFIG["release_cutoff_date"]).strip()
+    try:
+        probe_minutes = max(5, int(config.get("unreleased_probe_minutes") or 60))
+    except (TypeError, ValueError):
+        probe_minutes = 60
+    skipped_unreleased: List[str] = []
+
+    def _should_probe_unreleased(probe_key: str) -> bool:
+        ok = state_mgr.should_probe_unreleased(probe_key, cooldown_seconds=probe_minutes * 60)
+        if not ok:
+            parts = probe_key.split("|")
+            if len(parts) >= 3:
+                skipped_unreleased.append(parts[2])
+        return ok
+
+    units = build_query_units(
+        runnable,
+        release_cutoff=release_cutoff,
+        should_probe=_should_probe_unreleased,
+    )
+    if skipped_unreleased:
+        uniq_skipped = sorted(set(skipped_unreleased))
+        append_log(
+            f"待开启抢票日期（>{release_cutoff}）低频探测冷却中，本轮跳过 {len(uniq_skipped)} 天：{'、'.join(uniq_skipped[:6])}"
+        )
     if not units:
-        append_log("所有监控日期都已过去，本轮没有要查的。")
+        append_log("本轮没有需要立即查询的监控日期（均已过去或处于待开启抢票探测冷却中）。")
         return False
     # 组的先后每轮打乱，避免固定顺序被识别；组内仍是先去程后回程。
     random.shuffle(units)
@@ -678,10 +758,13 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
             watched_text = "、".join(f for f in watched if f) or "全部航班"
             targets = sorted({_target_price(t) for t in req["tasks"]})
             leg_label = "" if not is_round else ("去程 " if (from_code, to_code) == out_dir else "回程 ")
+            probe_tag = f"[探测待开启抢票>{release_cutoff}] " if req.get("unreleased_probe") else ""
             append_log(
-                f"查询任务：{leg_label}{date} | {from_city}({from_code})->{to_city}({to_code}) | {fare_label}"
+                f"查询任务：{probe_tag}{leg_label}{date} | {from_city}({from_code})->{to_city}({to_code}) | {fare_label}"
                 f" | 监控 {watched_text} | 目标<= {'/'.join(str(t) for t in targets)}"
             )
+            if req.get("unreleased_probe"):
+                state_mgr.mark_unreleased_probe(f"{from_code}|{to_code}|{date}|{fare_type}")
 
             try:
                 status, fares = fetch_price_status(
@@ -738,6 +821,14 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
             saw_prices = True
             for task in req["tasks"]:
                 state_mgr.mark_task_success(str(task.get("id", "")))
+            if release_cutoff and date > release_cutoff:
+                changed, old_cut, new_cut = advance_release_cutoff(date)
+                if changed:
+                    release_cutoff = new_cut
+                    append_log(
+                        f"🎉 [抢票开启] 检测到 {date}（{from_city}->{to_city}）已放出航班，"
+                        f"自动将抢票开放截止日从 {old_cut} 更新至 {new_cut}！后续轮次将转为正常高频监控。"
+                    )
 
             by_flight = {str(item.get("flight", "UNKNOWN")).strip().upper(): item for item in fares}
             for item in fares:
@@ -753,6 +844,9 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
                     (t for t in req["tasks"] if str(t.get("flight_no", "") or "").strip().upper() == flight.strip().upper()),
                     None,
                 )
+                # 同一次查询会带回当天其他航班。只记正在监控的航班号，避免 11/28 的 HU7702 查询把 HU7716 写成低价。
+                if owner is None:
+                    continue
                 history_record = {
                     "ts": datetime.now().isoformat(timespec="seconds"),
                     "task_id": str(owner.get("id", "")) if owner else "",
@@ -798,7 +892,7 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
                         hits.append({"req": req, "task": task, "item": item, "flight": flight, "price": price,
                                      "target_price": target_price, "fare_label": fare_label})
 
-        # 一组查完再发提醒：往返组的提醒里带上另一段同一时刻的价格。
+        # 一组查完再发提醒：往返组支持分级提醒（双边同时达标发强提醒，单边达标正常提醒并附另一段状态）。
         for hit in hits:
             req, task, item = hit["req"], hit["task"], hit["item"]
             flight, price, target_price = hit["flight"], hit["price"], hit["target_price"]
@@ -808,14 +902,31 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
             alert_task = dict(task)
             alert_task["date"] = date
             alert_task["date_end"] = str(task.get("date_end", "") or "")
-            fingerprint = _build_fingerprint(alert_task, flight, price)
+            companion, has_pair, both_hit = _companion_status(unit, req, results, task)
+            base_fp = _build_fingerprint(alert_task, flight, price)
+            # 往返双达标使用独立指纹后缀：若此前仅发过单边提醒，配对段后续出票时可立即升级触发「往返成行」强提醒
+            fingerprint = f"{base_fp}|round_ok" if both_hit else base_fp
             if not state_mgr.should_alert(fingerprint):
                 continue
-            companion = _companion_text(unit, req, results, task)
             seat_text = _seat_summary(item)
+            if has_pair and both_hit:
+                alert_level = "important"
+                alert_title = f"🎉 [往返成行] {from_city}→{to_city} {price} 元"
+                round_status_line = "往返状态：🎯 往返双边均已达标，可成套兑换！\n"
+            elif has_pair:
+                alert_level = "info"
+                alert_title = f"🔔 [单边有票] {from_city}→{to_city} {price} 元"
+                round_status_line = "往返状态：⏳ 当前仅单边有票，配对段暂未达标\n"
+            else:
+                alert_level = "important"
+                alert_title = f"🎉 {from_city}→{to_city} {price} 元"
+                round_status_line = ""
             # 保留 Server酱（向后兼容；公众号开关关闭时跳过）
             if wechat_enabled:
-                send_price_alert(send_keys, alert_task, flight, price, tiers=item.get("tiers"), extra=companion)
+                send_price_alert(
+                    send_keys, alert_task, flight, price,
+                    tiers=item.get("tiers"), extra=companion, title=alert_title,
+                )
             else:
                 append_log("微信公众号通知已停用，跳过 Server酱低价提醒。")
             # 多通道通知：飞书交互卡片（确认/忽略回调）+ 企微/钉钉/Bark/ntfy
@@ -829,7 +940,6 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
                 cabin_list = []
             if cabin_list:
                 cabin_extra = f"，舱位条件：{'、'.join(cabin_list)}"
-            alert_title = f"🎉 {from_city}→{to_city} {price} 元"
             alert_content = (
                 f"航班：{flight}\n"
                 f"日期：{date}\n"
@@ -838,6 +948,7 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
                 f"档位：{tier_text(item.get('tiers'))}\n"
                 f"价格：{price} 元\n"
                 f"余票：{seat_text}{cabin_extra}\n"
+                + round_status_line
                 + _time_lines(alert_task, item)
                 + (f"\n{companion}" if companion else "")
                 + "\n"
@@ -848,7 +959,7 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
             )
             notify_results = notify_channels(
                 cfg=apply_task_email(notify_cfg, task_email_for(alert_task, date)),
-                level="important",
+                level=alert_level,
                 title=alert_title,
                 content=alert_content,
                 card=card,

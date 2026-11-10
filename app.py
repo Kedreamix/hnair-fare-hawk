@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import portalocker
-import streamlit as st
 from backend.fetcher import parse_curl_command
 from backend.notifier import send_test_alert
 from city_codes import city_options, code_to_city_label, resolve_code
@@ -45,6 +44,11 @@ DEFAULT_CONFIG = {
     # 实时查价（海航接口）：enabled 为总开关（被风控时可随时关掉，关后 web 查价与 daemon 均跳过）；
     # min_interval 为全局查询最小间隔（秒），防手动连点触发风控。
     "price_query": {"enabled": True, "min_interval": 8},
+    # 海航随心飞当前开启抢票（放票）截止日期：
+    # <= release_cutoff_date 的日期已开启抢票，每轮正常监控；
+    # > release_cutoff_date 的日期处于「待开启抢票」，按 unreleased_probe_minutes 低频探测，一旦查到有航班自动推进截止日。
+    "release_cutoff_date": "2026-12-31",
+    "unreleased_probe_minutes": 60,
     # 通知渠道：飞书（企业自建应用机器人）。app_secret 仅在保存时写入，任何接口不回传。
     # enabled=渠道开关（默认开，配置完整才有效）；urgent_enabled=该渠道加急开关（默认开）。
     "feishu": {"app_id": "", "app_secret": "", "receiver": "", "enabled": True, "urgent_enabled": True},
@@ -293,18 +297,20 @@ def expand_task_dates(task: Dict[str, Any]) -> List[str]:
     return out
 
 
-def _task_key(from_code: str, to_code: str, flight_no: Any, dep_time: Any, arr_time: Any) -> str:
-    """任务分组键：出发|到达|航班号|起飞|到达。
+def _task_key(from_code: str, to_code: str, flight_no: Any, dep_time: Any, arr_time: Any = "") -> str:
+    """任务分组键：出发|到达|航班号|起飞。
 
-    - 不同航班号/起降时刻各自成任务（穷举，不按航线合并）；
-    - 无航班号的旧式条目退化为按航线合并（向后兼容旧添加入口）。
+    到达时刻不参与分组。同一航班、同一起飞，到达只差几分钟（班期修正）
+    仍并进原来那条，避免监控列表再拆出一张相同航线。
+    不同航班号或不同起飞时刻各自成任务。
+    无航班号的旧式条目退化为按航线合并（向后兼容旧添加入口）。
     """
+    del arr_time  # 保留参数，调用方仍会传入；到达时刻只作展示快照
     return "|".join([
         from_code,
         to_code,
         str(flight_no or "").strip().upper(),
         str(dep_time or "").strip(),
-        str(arr_time or "").strip(),
     ])
 
 
@@ -359,9 +365,10 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
     """从「航线查询」批量创建监控任务（当前只监控 199 元优惠价档）。
 
     规则：
-    - 「一个航班 = 一条任务」：按 出发|到达|航班号|起飞|到达 分组，把一天内不同时间起飞的
-      航班全部穷举成独立监控任务（不按航线合并，避免不同时刻的航班被并成一条导致漏提醒）；
-    - 同一分组（同航班号且起降时刻相同）的多个可飞日期并入同一条任务；
+    - 「一个航班 = 一条任务」：按 出发|到达|航班号|起飞 分组。一天内不同时间起飞的
+      航班各自独立（不按航线合并，避免不同时刻的航班被并成一条导致漏提醒）；
+    - 到达时刻不参与分组：同一航班起飞相同、到达只差几分钟时并入已有任务；
+    - 同一分组的多个可飞日期并入同一条任务；
     - 合并/新建统一为 fare_type=plus、target_price=199（普通票价档暂不监控）；
     - 快照字段（代表航班/时刻/经停/档位）用于列表展示，daemon 会按 task.flight_no 过滤航班，
       只提醒任务对应的那个航班，避免同航线多个任务重复提醒。
@@ -407,7 +414,7 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
         if isinstance(stop, dict) and (stop.get("kind") or stop.get("stops_detail")):
             snapshot["stop"] = stop
 
-        # 分组键含航班号+起降时刻：一天内不同时间的航班各自成为独立监控任务
+        # 分组键含航班号+起飞时刻，不含到达：同一航班到达修正几分钟仍并入原任务
         key = _task_key(from_code, to_code, snapshot["flight_no"], snapshot["dep_time"], snapshot["arr_time"])
 
         if key in idx:
@@ -582,6 +589,137 @@ def _set_email_overrides(task: Dict[str, Any], mapping: Dict[str, str]) -> None:
         task.pop("notify_email_by_date", None)
 
 
+def _parse_today_and_hm(today: str | None = None, now_hm: str | None = None) -> tuple[str, str]:
+    """解析传入的 today（可为 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM...'），返回 (today_str, now_hm)。
+
+    - today 为 None 时取当前系统时间的日期与 HH:MM；
+    - today 仅传入 YYYY-MM-DD 且未显式传 now_hm 时，now_hm 为空串（仅按日期过滤，兼容固定日期测试）。
+    """
+    if today is None:
+        now = datetime.now()
+        return now.strftime("%Y-%m-%d"), (str(now_hm).strip() if now_hm is not None else now.strftime("%H:%M"))
+    raw = str(today).strip()
+    d_part = raw[:10]
+    if now_hm is not None:
+        hm_part = str(now_hm).strip()
+    elif len(raw) >= 16 and raw[10] in (" ", "T"):
+        hm_part = raw[11:16]
+    else:
+        hm_part = ""
+    return d_part, hm_part
+
+
+def is_task_date_expired(day: str, dep_time: str = "", today_str: str = "", now_hm: str = "") -> bool:
+    """判断某个监控日期是否已过期：
+
+    - 早于 today_str 的日期已过期；
+    - 等于 today_str 且同时具备当前时刻 now_hm 与航班起飞时刻 dep_time（HH:MM）时，
+      若当前时刻已到或超过起飞时刻（dep_time <= now_hm），视为当日航班已起飞/过期。
+    """
+    d = str(day or "").strip()
+    if not d or not today_str:
+        return False
+    if d < today_str:
+        return True
+    if d > today_str:
+        return False
+    dep = str(dep_time or "").strip()
+    hm = str(now_hm or "").strip()
+    if len(dep) == 5 and dep[2] == ":" and len(hm) == 5 and hm[2] == ":":
+        if dep <= hm:
+            return True
+    return False
+
+
+def prune_expired_tasks(today: str | None = None, now_hm: str | None = None) -> List[Dict[str, Any]]:
+    """清理 tasks.json 中已过期（早于 today，或当日已过起飞时刻）的监控日期；若某任务所有日期均已过期则移除该任务。
+
+    同时清理已不在监控日期中的 disabled_dates、notify_email_by_date、round_pairs（含配对目标日期已过期的项）。
+    返回清理后的任务列表。
+    """
+    today_str, hm_str = _parse_today_and_hm(today, now_hm)
+    data = _read_json(TASKS_PATH, DEFAULT_TASKS)
+    raw_tasks = data.get("tasks", [])
+    if not isinstance(raw_tasks, list):
+        return []
+
+    # 预先记录每个航班号的起飞时刻，用于判断往返配对中另一段当日是否已起飞
+    dep_by_flight: Dict[str, str] = {}
+    for t in raw_tasks:
+        if isinstance(t, dict):
+            fn = str(t.get("flight_no") or "").strip().upper()
+            dep = str(t.get("dep_time") or "").strip()
+            if fn and dep:
+                dep_by_flight.setdefault(fn, dep)
+
+    changed = False
+    kept_tasks: List[Dict[str, Any]] = []
+    for task in raw_tasks:
+        if not isinstance(task, dict):
+            changed = True
+            continue
+        all_dates = expand_task_dates(task)
+        if not all_dates:
+            # 无任何日期的异常旧任务原样保留，交由后续处理
+            kept_tasks.append(task)
+            continue
+        dep_time = str(task.get("dep_time") or "").strip()
+        valid_dates = [d for d in all_dates if not is_task_date_expired(d, dep_time, today_str, hm_str)]
+        if not valid_dates:
+            changed = True
+            continue
+        valid_set = set(valid_dates)
+        # 检查往返配对是否有过期项需要清理
+        raw_pairs = _norm_round_pairs(task.get("round_pairs"))
+        cleaned_pairs: Dict[str, Any] = {}
+        for day, info in raw_pairs.items():
+            if day not in valid_set:
+                continue
+            items = [
+                it for it in _pair_items(info)
+                if not is_task_date_expired(
+                    it["mate_date"],
+                    dep_by_flight.get(it["mate_flight"], ""),
+                    today_str,
+                    hm_str,
+                )
+            ]
+            if items:
+                cleaned_pairs[day] = items[0] if len(items) == 1 else items
+
+        dates_changed = (
+            valid_dates != all_dates
+            or task.get("dates") != valid_dates
+            or task.get("date") != valid_dates[0]
+            or task.get("date_end") != valid_dates[-1]
+            or cleaned_pairs != raw_pairs
+        )
+        if dates_changed:
+            task = dict(task)
+            if "dates" in task or len(all_dates) != len(valid_dates):
+                task["dates"] = valid_dates
+            task["date"] = valid_dates[0]
+            task["date_end"] = valid_dates[-1]
+            if "disabled_dates" in task:
+                old_disabled = [str(d).strip() for d in (task.get("disabled_dates") or []) if str(d).strip()]
+                new_disabled = sorted(set(old_disabled) & valid_set)
+                task["disabled_dates"] = new_disabled
+                if not (valid_set - set(new_disabled)):
+                    task["enabled"] = False
+            if "notify_email_by_date" in task:
+                mapping = {d: addr for d, addr in _email_overrides(task).items() if d in valid_set}
+                _set_email_overrides(task, mapping)
+            if "round_pairs" in task or cleaned_pairs:
+                _set_round_pairs(task, cleaned_pairs, valid_set)
+            changed = True
+        kept_tasks.append(task)
+
+    if changed:
+        data["tasks"] = kept_tasks
+        _write_json(TASKS_PATH, data)
+    return kept_tasks
+
+
 def task_email_for(task: Dict[str, Any], day: str) -> str:
     """命中某一天时用的收件人：当天覆盖，否则航班默认，都没有则空（调用方用全局收件人）。"""
     overrides = _email_overrides(task)
@@ -726,6 +864,47 @@ def save_price_query(enabled: bool, min_interval: int) -> None:
         interval = DEFAULT_CONFIG["price_query"]["min_interval"]
     pq["min_interval"] = interval
     _write_json(CONFIG_PATH, config)
+
+
+def save_release_cutoff(cutoff_date: str, probe_minutes: int | None = None) -> tuple[str, int]:
+    """保存抢票开放截止日（YYYY-MM-DD）及未开启抢票日期的低频探测间隔（分钟，5~720）。"""
+    raw = str(cutoff_date or "").strip()
+    try:
+        datetime.strptime(raw, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("截止日期格式应为 YYYY-MM-DD") from exc
+    config = load_config()
+    config["release_cutoff_date"] = raw
+    if probe_minutes is not None:
+        try:
+            mins = max(5, min(720, int(probe_minutes)))
+        except (TypeError, ValueError):
+            mins = int(config.get("unreleased_probe_minutes") or 60)
+        config["unreleased_probe_minutes"] = mins
+    else:
+        mins = int(config.get("unreleased_probe_minutes") or 60)
+    _write_json(CONFIG_PATH, config)
+    return raw, mins
+
+
+def advance_release_cutoff(observed_date: str) -> tuple[bool, str, str]:
+    """当探测到更晚日期已放出航班时，自动推进 config.json 中的 release_cutoff_date。
+
+    返回 (是否发生推进, 旧截止日, 新截止日)。
+    """
+    obs = str(observed_date or "").strip()
+    try:
+        datetime.strptime(obs, "%Y-%m-%d")
+    except ValueError:
+        cur = str(load_config().get("release_cutoff_date") or DEFAULT_CONFIG["release_cutoff_date"])
+        return False, cur, cur
+    config = load_config()
+    cur = str(config.get("release_cutoff_date") or DEFAULT_CONFIG["release_cutoff_date"]).strip()
+    if obs > cur:
+        config["release_cutoff_date"] = obs
+        _write_json(CONFIG_PATH, config)
+        return True, cur, obs
+    return False, cur, cur
 
 
 def save_polling(day_min_sec=None, day_max_sec=None, night_min_sec=None, night_max_sec=None) -> None:
@@ -911,8 +1090,11 @@ def read_price_history(line_count: int = 50) -> List[Dict[str, Any]]:
     return records
 
 
-def read_low_price_history(limit: int = 50, max_price: int = 500) -> List[Dict[str, Any]]:
-    """从文件末尾往前收集价格不超过 max_price 的记录，最多 limit 条，按时间正序返回。"""
+def read_low_price_history(limit: int = 50, max_price: int = 500, owned_only: bool = False) -> List[Dict[str, Any]]:
+    """从文件末尾往前收集价格不超过 max_price 的记录，最多 limit 条，按时间正序返回。
+
+    owned_only 时跳过没有 task_id 的记录。那些是同一次查询带回的其他航班，不是正在监控的班次。
+    """
     if limit <= 0 or not HISTORY_PATH.exists():
         return []
     try:
@@ -934,6 +1116,8 @@ def read_low_price_history(limit: int = 50, max_price: int = 500) -> List[Dict[s
         if isinstance(price, bool) or not isinstance(price, (int, float)):
             continue
         if price > max_price:
+            continue
+        if owned_only and not str(record.get("task_id") or "").strip():
             continue
         picked.append(record)
         if len(picked) >= limit:
@@ -1007,6 +1191,8 @@ def load_config() -> Dict[str, Any]:
         config["price_query"] = dict(DEFAULT_CONFIG["price_query"])
     config["price_query"].setdefault("enabled", DEFAULT_CONFIG["price_query"]["enabled"])
     config["price_query"].setdefault("min_interval", DEFAULT_CONFIG["price_query"]["min_interval"])
+    config.setdefault("release_cutoff_date", DEFAULT_CONFIG["release_cutoff_date"])
+    config.setdefault("unreleased_probe_minutes", DEFAULT_CONFIG["unreleased_probe_minutes"])
 
     config.setdefault("feishu", dict(DEFAULT_CONFIG["feishu"]))
 
@@ -1056,6 +1242,8 @@ def inject_calendar_cn_locale() -> None:
     将 Streamlit 原生日历弹层中的英文月/星期替换为中文。
     说明：这是前端文本替换策略，随 Streamlit/组件升级可能需微调。
     """
+    import streamlit as st
+
     st.markdown(
         """
 <script>
@@ -1097,6 +1285,8 @@ def inject_calendar_cn_locale() -> None:
 
 
 def main() -> None:
+    import streamlit as st
+
     st.set_page_config(page_title="海航低价监控", page_icon="✈️", layout="wide")
     ensure_data_files()
 

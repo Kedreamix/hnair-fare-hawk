@@ -45,6 +45,14 @@ export const api = {
     request('/api/price_query', { method: 'POST', body: JSON.stringify({ enabled, min_interval: minInterval }) }),
   savePolling: (polling) =>
     request('/api/polling', { method: 'POST', body: JSON.stringify(polling) }),
+  saveReleaseCutoff: (releaseCutoffDate, probeMinutes) =>
+    request('/api/release_cutoff', {
+      method: 'POST',
+      body: JSON.stringify({
+        release_cutoff_date: releaseCutoffDate,
+        unreleased_probe_minutes: probeMinutes,
+      }),
+    }),
   saveTicket: (fareType, raw) =>
     request('/api/ticket', { method: 'POST', body: JSON.stringify({ fare_type: fareType, raw }) }),
   saveFeishu: (payload) => request('/api/feishu', { method: 'POST', body: JSON.stringify(payload) }),
