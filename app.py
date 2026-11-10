@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import portalocker
-import streamlit as st
 from backend.fetcher import parse_curl_command
 from backend.notifier import send_test_alert
 from city_codes import city_options, code_to_city_label, resolve_code
@@ -582,17 +581,68 @@ def _set_email_overrides(task: Dict[str, Any], mapping: Dict[str, str]) -> None:
         task.pop("notify_email_by_date", None)
 
 
-def prune_expired_tasks(today: str | None = None) -> List[Dict[str, Any]]:
-    """清理 tasks.json 中已过期（早于 today）的监控日期；若某任务所有日期均已过期则移除该任务。
+def _parse_today_and_hm(today: str | None = None, now_hm: str | None = None) -> tuple[str, str]:
+    """解析传入的 today（可为 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM...'），返回 (today_str, now_hm)。
+
+    - today 为 None 时取当前系统时间的日期与 HH:MM；
+    - today 仅传入 YYYY-MM-DD 且未显式传 now_hm 时，now_hm 为空串（仅按日期过滤，兼容固定日期测试）。
+    """
+    if today is None:
+        now = datetime.now()
+        return now.strftime("%Y-%m-%d"), (str(now_hm).strip() if now_hm is not None else now.strftime("%H:%M"))
+    raw = str(today).strip()
+    d_part = raw[:10]
+    if now_hm is not None:
+        hm_part = str(now_hm).strip()
+    elif len(raw) >= 16 and raw[10] in (" ", "T"):
+        hm_part = raw[11:16]
+    else:
+        hm_part = ""
+    return d_part, hm_part
+
+
+def is_task_date_expired(day: str, dep_time: str = "", today_str: str = "", now_hm: str = "") -> bool:
+    """判断某个监控日期是否已过期：
+
+    - 早于 today_str 的日期已过期；
+    - 等于 today_str 且同时具备当前时刻 now_hm 与航班起飞时刻 dep_time（HH:MM）时，
+      若当前时刻已到或超过起飞时刻（dep_time <= now_hm），视为当日航班已起飞/过期。
+    """
+    d = str(day or "").strip()
+    if not d or not today_str:
+        return False
+    if d < today_str:
+        return True
+    if d > today_str:
+        return False
+    dep = str(dep_time or "").strip()
+    hm = str(now_hm or "").strip()
+    if len(dep) == 5 and dep[2] == ":" and len(hm) == 5 and hm[2] == ":":
+        if dep <= hm:
+            return True
+    return False
+
+
+def prune_expired_tasks(today: str | None = None, now_hm: str | None = None) -> List[Dict[str, Any]]:
+    """清理 tasks.json 中已过期（早于 today，或当日已过起飞时刻）的监控日期；若某任务所有日期均已过期则移除该任务。
 
     同时清理已不在监控日期中的 disabled_dates、notify_email_by_date、round_pairs（含配对目标日期已过期的项）。
     返回清理后的任务列表。
     """
-    today_str = str(today or date.today().isoformat()).strip()
+    today_str, hm_str = _parse_today_and_hm(today, now_hm)
     data = _read_json(TASKS_PATH, DEFAULT_TASKS)
     raw_tasks = data.get("tasks", [])
     if not isinstance(raw_tasks, list):
         return []
+
+    # 预先记录每个航班号的起飞时刻，用于判断往返配对中另一段当日是否已起飞
+    dep_by_flight: Dict[str, str] = {}
+    for t in raw_tasks:
+        if isinstance(t, dict):
+            fn = str(t.get("flight_no") or "").strip().upper()
+            dep = str(t.get("dep_time") or "").strip()
+            if fn and dep:
+                dep_by_flight.setdefault(fn, dep)
 
     changed = False
     kept_tasks: List[Dict[str, Any]] = []
@@ -605,17 +655,43 @@ def prune_expired_tasks(today: str | None = None) -> List[Dict[str, Any]]:
             # 无任何日期的异常旧任务原样保留，交由后续处理
             kept_tasks.append(task)
             continue
-        valid_dates = [d for d in all_dates if d >= today_str]
+        dep_time = str(task.get("dep_time") or "").strip()
+        valid_dates = [d for d in all_dates if not is_task_date_expired(d, dep_time, today_str, hm_str)]
         if not valid_dates:
             changed = True
             continue
-        if valid_dates != all_dates or task.get("dates") != valid_dates or task.get("date") != valid_dates[0] or task.get("date_end") != valid_dates[-1]:
+        valid_set = set(valid_dates)
+        # 检查往返配对是否有过期项需要清理
+        raw_pairs = _norm_round_pairs(task.get("round_pairs"))
+        cleaned_pairs: Dict[str, Any] = {}
+        for day, info in raw_pairs.items():
+            if day not in valid_set:
+                continue
+            items = [
+                it for it in _pair_items(info)
+                if not is_task_date_expired(
+                    it["mate_date"],
+                    dep_by_flight.get(it["mate_flight"], ""),
+                    today_str,
+                    hm_str,
+                )
+            ]
+            if items:
+                cleaned_pairs[day] = items[0] if len(items) == 1 else items
+
+        dates_changed = (
+            valid_dates != all_dates
+            or task.get("dates") != valid_dates
+            or task.get("date") != valid_dates[0]
+            or task.get("date_end") != valid_dates[-1]
+            or cleaned_pairs != raw_pairs
+        )
+        if dates_changed:
             task = dict(task)
             if "dates" in task or len(all_dates) != len(valid_dates):
                 task["dates"] = valid_dates
             task["date"] = valid_dates[0]
             task["date_end"] = valid_dates[-1]
-            valid_set = set(valid_dates)
             if "disabled_dates" in task:
                 old_disabled = [str(d).strip() for d in (task.get("disabled_dates") or []) if str(d).strip()]
                 new_disabled = sorted(set(old_disabled) & valid_set)
@@ -625,15 +701,7 @@ def prune_expired_tasks(today: str | None = None) -> List[Dict[str, Any]]:
             if "notify_email_by_date" in task:
                 mapping = {d: addr for d, addr in _email_overrides(task).items() if d in valid_set}
                 _set_email_overrides(task, mapping)
-            if "round_pairs" in task:
-                pairs = _norm_round_pairs(task.get("round_pairs"))
-                cleaned_pairs: Dict[str, Any] = {}
-                for day, info in pairs.items():
-                    if day not in valid_set:
-                        continue
-                    items = [it for it in _pair_items(info) if it["mate_date"] >= today_str]
-                    if items:
-                        cleaned_pairs[day] = items[0] if len(items) == 1 else items
+            if "round_pairs" in task or cleaned_pairs:
                 _set_round_pairs(task, cleaned_pairs, valid_set)
             changed = True
         kept_tasks.append(task)
@@ -1118,6 +1186,8 @@ def inject_calendar_cn_locale() -> None:
     将 Streamlit 原生日历弹层中的英文月/星期替换为中文。
     说明：这是前端文本替换策略，随 Streamlit/组件升级可能需微调。
     """
+    import streamlit as st
+
     st.markdown(
         """
 <script>
@@ -1159,6 +1229,8 @@ def inject_calendar_cn_locale() -> None:
 
 
 def main() -> None:
+    import streamlit as st
+
     st.set_page_config(page_title="海航低价监控", page_icon="✈️", layout="wide")
     ensure_data_files()
 

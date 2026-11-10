@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 import portalocker
 
-from app import prune_expired_tasks, task_email_for
+from app import _parse_today_and_hm, is_task_date_expired, prune_expired_tasks, task_email_for
 from backend.channels import apply_task_email, build_confirm_card, hna_jump_block, notify_channels
 import backend.feishu_ws as feishu_ws  # noqa: E402
 from backend.fetcher import TokenExpiredError, fetch_price_status
@@ -297,23 +297,29 @@ def _pair_info(task: Dict[str, Any], day: str) -> Dict[str, str] | None:
     return infos[0] if infos else None
 
 
-def build_query_units(tasks: List[Dict[str, Any]], today: str | None = None) -> List[List[Dict[str, Any]]]:
+def build_query_units(
+    tasks: List[Dict[str, Any]],
+    today: str | None = None,
+    now_hm: str | None = None,
+) -> List[List[Dict[str, Any]]]:
     """把任务展开成本轮要发的请求，并按明确的往返配对分组。
 
     - 每个请求是一个 (出发, 到达, 日期, 档位)，同一请求只发一次，挂上所有关注它的任务；
-    - 早于今天的日期不再查询；
+    - 早于今天的日期或当日已过起飞时间的航班不再查询；
+    - 所有已选的未来周次均正常放入轮询（不因距离起飞超过 12/14 天而降频或跳过，确保任意一周放票都能第一时间命中）；
     - 只有 round_pairs 能对上另一段（反方向、对方航班、对方日期都在本轮请求里）才放进同一组；
     - 组内先去程后回程。没有配对的请求各自单查；
     - 组按最早日期排序，近的先查。
     """
-    today = today or datetime.now().strftime("%Y-%m-%d")
+    today_str, hm_str = _parse_today_and_hm(today, now_hm)
     requests_by_key: Dict[tuple, Dict[str, Any]] = {}
     for task in tasks:
         from_code, to_code, fare_type = _task_codes(task)
         if not (from_code and to_code):
             continue
+        dep_time = str(task.get("dep_time") or "").strip()
         for date in expand_dates(task):
-            if _day_gap(today, date) is not None and date < today:
+            if _day_gap(today_str, date) is not None and is_task_date_expired(date, dep_time, today_str, hm_str):
                 continue
             key = (from_code, to_code, date, fare_type)
             req = requests_by_key.setdefault(
@@ -362,20 +368,21 @@ def build_query_units(tasks: List[Dict[str, Any]], today: str | None = None) -> 
     return units
 
 
-def _companion_text(
+def _companion_status(
     unit: List[Dict[str, Any]],
     req: Dict[str, Any],
     results: Dict[tuple, Dict[str, Any]],
     task: Dict[str, Any] | None = None,
-) -> str:
-    """命中一段时，描述 round_pairs 里那一天的查询结果。没有配对返回空串。"""
+) -> tuple[str, bool, bool]:
+    """命中一段时，描述 round_pairs 里那一天的查询结果，并返回 (描述文本, 是否存在往返配对, 是否双边同时达标)。"""
     task = task or next((item for item in req.get("tasks") or [] if _pair_infos(item, req["date"])), None)
     if not task:
-        return ""
+        return "", False, False
     infos = _pair_infos(task, req["date"])
     if not infos:
-        return ""
+        return "", False, False
     parts = []
+    both_hit = False
     for info in infos:
         mate_from, mate_to = req["to_code"], req["from_code"]
         label = "回程" if info["role"] == "out" else "去程"
@@ -404,9 +411,27 @@ def _companion_text(
         if not item or not isinstance(item.get("price"), int):
             parts.append(f"{head}：{flight} 暂无可兑票")
             continue
-        mark = "也达标 ✅" if owner and item["price"] <= _target_price(owner) else "未达标"
+        mate_ok = bool(
+            owner
+            and item["price"] <= _target_price(owner)
+            and _task_seat_ok(owner, item)
+            and _task_tier_ok(owner, item)
+        )
+        if mate_ok:
+            both_hit = True
+        mark = "也达标 ✅" if mate_ok else "未达标"
         parts.append(f"{head}：{flight} {item['price']} 元（{_seat_summary(item)}，{mark}）")
-    return "；".join(parts)
+    return "；".join(parts), True, both_hit
+
+
+def _companion_text(
+    unit: List[Dict[str, Any]],
+    req: Dict[str, Any],
+    results: Dict[tuple, Dict[str, Any]],
+    task: Dict[str, Any] | None = None,
+) -> str:
+    """命中一段时，描述 round_pairs 里那一天的查询结果。没有配对返回空串。"""
+    return _companion_status(unit, req, results, task)[0]
 
 
 def sleep_with_status_check(seconds: int, check_interval: int) -> None:
@@ -798,7 +823,7 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
                         hits.append({"req": req, "task": task, "item": item, "flight": flight, "price": price,
                                      "target_price": target_price, "fare_label": fare_label})
 
-        # 一组查完再发提醒：往返组的提醒里带上另一段同一时刻的价格。
+        # 一组查完再发提醒：往返组支持分级提醒（双边同时达标发强提醒，单边达标正常提醒并附另一段状态）。
         for hit in hits:
             req, task, item = hit["req"], hit["task"], hit["item"]
             flight, price, target_price = hit["flight"], hit["price"], hit["target_price"]
@@ -808,14 +833,31 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
             alert_task = dict(task)
             alert_task["date"] = date
             alert_task["date_end"] = str(task.get("date_end", "") or "")
-            fingerprint = _build_fingerprint(alert_task, flight, price)
+            companion, has_pair, both_hit = _companion_status(unit, req, results, task)
+            base_fp = _build_fingerprint(alert_task, flight, price)
+            # 往返双达标使用独立指纹后缀：若此前仅发过单边提醒，配对段后续出票时可立即升级触发「往返成行」强提醒
+            fingerprint = f"{base_fp}|round_ok" if both_hit else base_fp
             if not state_mgr.should_alert(fingerprint):
                 continue
-            companion = _companion_text(unit, req, results, task)
             seat_text = _seat_summary(item)
+            if has_pair and both_hit:
+                alert_level = "important"
+                alert_title = f"🎉 [往返成行] {from_city}→{to_city} {price} 元"
+                round_status_line = "往返状态：🎯 往返双边均已达标，可成套兑换！\n"
+            elif has_pair:
+                alert_level = "info"
+                alert_title = f"🔔 [单边有票] {from_city}→{to_city} {price} 元"
+                round_status_line = "往返状态：⏳ 当前仅单边有票，配对段暂未达标\n"
+            else:
+                alert_level = "important"
+                alert_title = f"🎉 {from_city}→{to_city} {price} 元"
+                round_status_line = ""
             # 保留 Server酱（向后兼容；公众号开关关闭时跳过）
             if wechat_enabled:
-                send_price_alert(send_keys, alert_task, flight, price, tiers=item.get("tiers"), extra=companion)
+                send_price_alert(
+                    send_keys, alert_task, flight, price,
+                    tiers=item.get("tiers"), extra=companion, title=alert_title,
+                )
             else:
                 append_log("微信公众号通知已停用，跳过 Server酱低价提醒。")
             # 多通道通知：飞书交互卡片（确认/忽略回调）+ 企微/钉钉/Bark/ntfy
@@ -829,7 +871,6 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
                 cabin_list = []
             if cabin_list:
                 cabin_extra = f"，舱位条件：{'、'.join(cabin_list)}"
-            alert_title = f"🎉 {from_city}→{to_city} {price} 元"
             alert_content = (
                 f"航班：{flight}\n"
                 f"日期：{date}\n"
@@ -838,6 +879,7 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
                 f"档位：{tier_text(item.get('tiers'))}\n"
                 f"价格：{price} 元\n"
                 f"余票：{seat_text}{cabin_extra}\n"
+                + round_status_line
                 + _time_lines(alert_task, item)
                 + (f"\n{companion}" if companion else "")
                 + "\n"
@@ -848,7 +890,7 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
             )
             notify_results = notify_channels(
                 cfg=apply_task_email(notify_cfg, task_email_for(alert_task, date)),
-                level="important",
+                level=alert_level,
                 title=alert_title,
                 content=alert_content,
                 card=card,

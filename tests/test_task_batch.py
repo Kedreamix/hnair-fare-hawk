@@ -568,3 +568,33 @@ def test_prune_expired_tasks_cleans_associated_fields(app_env):
     assert t["enabled"] is True  # 2026-11-21 仍处于开启状态
     assert t.get("notify_email_by_date") == {"2026-11-14": "future@example.com"}
     assert list(t.get("round_pairs", {}).keys()) == ["2026-11-14"]
+
+
+def test_prune_expired_tasks_same_day_departed(app_env):
+    """当日已过起飞时刻的监控日期自动清理，当日尚未起飞的航班保留。"""
+    app_mod.add_tasks_batch([
+        {
+            "from_code": "SZX",
+            "to_code": "HRB",
+            "dates": ["2026-11-11", "2026-12-05"],
+            "flight_no": "HU7763",
+            "dep_time": "06:40",
+            "arr_time": "14:00",
+        },
+        {
+            "from_code": "SZX",
+            "to_code": "PEK",
+            "dates": ["2026-11-11"],
+            "flight_no": "HU7716",
+            "dep_time": "21:10",
+            "arr_time": "00:25",
+        },
+    ])
+    # 11-11 08:00 时：06:40 的 HU7763 当日已起飞，剔除 2026-11-11 仅留 2026-12-05；21:10 的 HU7716 当日未起飞，保留
+    kept = app_mod.prune_expired_tasks(today="2026-11-11 08:00")
+    by_fn = {t["flight_no"]: t["dates"] for t in kept}
+    assert by_fn == {
+        "HU7763": ["2026-12-05"],
+        "HU7716": ["2026-11-11"],
+    }
+

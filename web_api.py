@@ -267,7 +267,7 @@ def _sanitize_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _today_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
 def _build_state() -> Dict[str, Any]:
@@ -398,9 +398,11 @@ def _build_task_rows(tasks: List[Dict[str, Any]], today: str | None = None) -> L
     - 快照字段（代表航班/时刻/经停/档位）来自该分组最近一条带快照的任务，
       可被观测库中更新的实时事实（起降时刻/航站楼/经停）覆盖；
     - ids 为分组下所有底层任务 id，批量启停/删除以此为单位；
-    - today 非空时：自动剔除早于 today 的过期日期；若分组内所有日期均已过期，则不展示该分组。
+    - today 非空时：自动剔除早于 today 或当日已起飞的过期日期；若分组内所有日期均已过期，则不展示该分组。
     """
-    today_str = str(today or "").strip()
+    from app import _parse_today_and_hm, is_task_date_expired
+
+    today_d, now_hm = _parse_today_and_hm(today) if today is not None else ("", "")
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for t in tasks:
         fc = str(t.get("from_code", "") or "").strip().upper()
@@ -416,10 +418,6 @@ def _build_task_rows(tasks: List[Dict[str, Any]], today: str | None = None) -> L
         from_code = str(group[0]["from_code"]).upper()
         to_code = str(group[0]["to_code"]).upper()
         all_dates = sorted({d for t in group for d in expand_task_dates(t)})
-        dates = [d for d in all_dates if d >= today_str] if today_str else all_dates
-        if today_str and all_dates and not dates:
-            continue
-        valid_date_set = set(dates)
         products = sorted({p for t in group for p in str(t.get("product", "") or "").split("/") if p})
         snap = next((t for t in reversed(group) if t.get("flight_no")), group[0])
         flight_no = str(snap.get("flight_no", "") or "").strip()
@@ -435,7 +433,7 @@ def _build_task_rows(tasks: List[Dict[str, Any]], today: str | None = None) -> L
         if flight_no:
             obs = obs_data.get(observations.obs_key(flight_no, from_city, to_city))
             if obs:
-                if observations.observation_matches_weekday({"days": _weekdays(dates)}, obs):
+                if observations.observation_matches_weekday({"days": _weekdays(all_dates)}, obs):
                     if obs.get("dep_time"):
                         dep_time = obs["dep_time"]
                     if obs.get("arr_time"):
@@ -444,6 +442,13 @@ def _build_task_rows(tasks: List[Dict[str, Any]], today: str | None = None) -> L
                     stop = obs["stop"]
                 from_terminal = str(obs.get("dep_terminal") or "")
                 to_terminal = str(obs.get("arr_terminal") or "")
+        dates = [
+            d for d in all_dates
+            if not is_task_date_expired(d, dep_time, today_d, now_hm)
+        ] if today_d else all_dates
+        if today_d and all_dates and not dates:
+            continue
+        valid_date_set = set(dates)
         # 旧任务无档位快照时，从底表补一条代表航线的档位（便于展示）
         if not products:
             recs = sediment.query(from_city=from_city, to_city=to_city, limit=1)

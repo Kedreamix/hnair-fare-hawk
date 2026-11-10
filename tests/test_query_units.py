@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from daemon import _companion_text, build_query_units  # noqa: E402
+from daemon import _companion_status, _companion_text, build_query_units  # noqa: E402
 
 TODAY = "2026-10-11"
 
@@ -152,3 +152,57 @@ def test_beijing_pairs_stay_separate_from_unpaired_dates():
     assert _companion_text(first, back_req, results, paired).startswith("去程 10/24 ")
     assert "HU7716 199 元" in _companion_text(first, back_req, results, paired)
     assert _companion_text(first, back_req, results, lone) == ""
+
+
+def test_same_day_departed_flight_skipped_while_later_flight_kept():
+    """当日已过起飞时刻的航班跳过查询，当日尚未起飞的航班与未来周次均正常保留。"""
+    tasks = [
+        _task("morning", "SZX", "PEK", ["2026-11-11", "2026-11-18"], "HU7702", dep_time="07:30"),
+        _task("night", "SZX", "PEK", ["2026-11-11", "2026-11-18", "2026-12-26"], "HU7716", dep_time="21:10"),
+    ]
+    units = build_query_units(tasks, today="2026-11-11 12:00")
+    by_date = {u[0]["date"]: [t["flight_no"] for t in u[0]["tasks"]] for u in units}
+    # 11-11 当天 12:00 时，07:30 的 HU7702 已起飞不再查，21:10 的 HU7716 仍查；远期 11-18、12-26 全部正常查
+    assert by_date == {
+        "2026-11-11": ["HU7716"],
+        "2026-11-18": ["HU7702", "HU7716"],
+        "2026-12-26": ["HU7716"],
+    }
+
+
+def test_companion_status_tiered_round_trip():
+    """往返配对分级判断：双边同时达标时 both_hit=True，单边达标时 both_hit=False，单程无配对时 has_pair=False。"""
+    tasks = [
+        _task("out", "SZX", "TNA", ["2026-11-14"], "Y87903", round_pairs={
+            "2026-11-14": _pair("out", "2026-11-15", "Y87904"),
+        }),
+        _task("back", "TNA", "SZX", ["2026-11-15"], "Y87904", round_pairs={
+            "2026-11-15": _pair("back", "2026-11-14", "Y87903"),
+        }),
+    ]
+    unit = build_query_units(tasks, today=TODAY)[0]
+    out_req, back_req = unit
+
+    # 1) 双边都达标
+    results_both = {
+        ("SZX", "TNA", "2026-11-14"): {"fares": [{"flight": "Y87903", "price": 199, "seats": 3}]},
+        ("TNA", "SZX", "2026-11-15"): {"fares": [{"flight": "Y87904", "price": 199, "seats": 2}]},
+    }
+    text, has_pair, both_hit = _companion_status(unit, out_req, results_both)
+    assert has_pair is True and both_hit is True
+    assert "也达标 ✅" in text
+
+    # 2) 仅去程达标，回程无票
+    results_single = {
+        ("SZX", "TNA", "2026-11-14"): {"fares": [{"flight": "Y87903", "price": 199, "seats": 3}]},
+        ("TNA", "SZX", "2026-11-15"): {"fares": []},
+    }
+    text2, has_pair2, both_hit2 = _companion_status(unit, out_req, results_single)
+    assert has_pair2 is True and both_hit2 is False
+    assert "暂无可兑票" in text2
+
+    # 3) 普通单程任务
+    single_unit = build_query_units([_task("s", "SZX", "TNA", ["2026-11-14"], "Y87903")], today=TODAY)[0]
+    text3, has_pair3, both_hit3 = _companion_status(single_unit, single_unit[0], {})
+    assert text3 == "" and has_pair3 is False and both_hit3 is False
+
