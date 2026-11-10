@@ -206,3 +206,39 @@ def test_companion_status_tiered_round_trip():
     text3, has_pair3, both_hit3 = _companion_status(single_unit, single_unit[0], {})
     assert text3 == "" and has_pair3 is False and both_hit3 is False
 
+
+def test_release_cutoff_tiers_released_and_unreleased_dates():
+    """按抢票开放截止日（如 2026-12-31）分级：<= 截止日每轮必查，> 截止日按 should_probe 低频探测。"""
+    tasks = [
+        _task("a", "SZX", "HRB", ["2026-12-05", "2026-12-31", "2027-01-02", "2027-01-09"], "HU7763"),
+    ]
+    # 1) 未到探测时间（should_probe 返回 False）：<= 2026-12-31 的所有周次正常查询，2027-01-* 本轮跳过
+    units_cool = build_query_units(
+        tasks,
+        today="2026-11-11",
+        release_cutoff="2026-12-31",
+        should_probe=lambda k: False,
+    )
+    assert _brief(units_cool) == [
+        [("2026-12-05", "SZX", "HRB")],
+        [("2026-12-31", "SZX", "HRB")],
+    ]
+    assert all(u[0]["unreleased_probe"] is False for u in units_cool)
+
+    # 2) 到达探测时间（例如 2027-01-02 允许探测）：2027-01-02 带着 unreleased_probe=True 进入本轮
+    units_probe = build_query_units(
+        tasks,
+        today="2026-11-11",
+        release_cutoff="2026-12-31",
+        should_probe=lambda k: "2027-01-02" in k,
+    )
+    assert _brief(units_probe) == [
+        [("2026-12-05", "SZX", "HRB")],
+        [("2026-12-31", "SZX", "HRB")],
+        [("2027-01-02", "SZX", "HRB")],
+    ]
+    assert units_probe[0][0]["unreleased_probe"] is False
+    assert units_probe[1][0]["unreleased_probe"] is False
+    assert units_probe[2][0]["unreleased_probe"] is True
+
+

@@ -29,6 +29,7 @@ class AlertStateManager:
             "price_alerts": {},
             "token_alert": {"last_ts": 0},
             "task_backoff": {},
+            "unreleased_probes": {},
         }
 
     def _ensure_file(self) -> None:
@@ -167,3 +168,37 @@ class AlertStateManager:
         if task_id in backoff:
             backoff.pop(task_id)
             self._save_state(data)
+
+    # ---------- 未开启抢票日期的低频探测节流 ----------
+
+    def should_probe_unreleased(
+        self,
+        probe_key: str,
+        cooldown_seconds: int = 3600,
+        now_ts: float | None = None,
+    ) -> bool:
+        """判断尚未开启抢票（> release_cutoff_date）的日期本轮是否到达低频探测时间。"""
+        now = now_ts or time.time()
+        data = self._load_state()
+        probes = data.get("unreleased_probes")
+        if not isinstance(probes, dict):
+            return True
+        last_ts = probes.get(probe_key)
+        if last_ts is None:
+            return True
+        try:
+            return now - float(last_ts) >= max(60, int(cooldown_seconds))
+        except (TypeError, ValueError):
+            return True
+
+    def mark_unreleased_probe(self, probe_key: str, now_ts: float | None = None) -> None:
+        """记录一次未开启抢票日期的探测时间戳。"""
+        now = now_ts or time.time()
+        data = self._load_state()
+        probes = data.setdefault("unreleased_probes", {})
+        if not isinstance(probes, dict):
+            probes = {}
+            data["unreleased_probes"] = probes
+        probes[probe_key] = now
+        self._save_state(data)
+

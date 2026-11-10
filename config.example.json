@@ -29,6 +29,8 @@
     "enabled": true,
     "min_interval": 8
   },
+  "release_cutoff_date": "2026-12-31",
+  "unreleased_probe_minutes": 60,
   "feishu": {
     "app_id": "",
     "app_secret": "",

@@ -245,7 +245,14 @@ function Overview({ data, onGo, onToggleStatus, onChanged, msg, onOpenDetail }) 
   const cfg = data.config
   const stats = data.stats
   const running = cfg.status === 'running'
-  const hits = [...(data.history || [])].reverse().filter((r) => Number(r.price) <= 500).slice(0, 50)
+  const hits = (data.history || []).filter((r) => {
+    if (!(Number(r.price) <= 500) || !r.task_id) return false
+    const flight = String(r.flight || '').toUpperCase()
+    const day = String(r.date || '')
+    const tasks = data.tasks || []
+    if (!flight || !day || !tasks.length) return true
+    return tasks.some((t) => String(t.flight_no || '').toUpperCase() === flight && (t.dates || []).includes(day))
+  }).reverse().slice(0, 50)
 
   const taskOf = (r) => (data.tasks || []).find((t) => Array.isArray(t.ids) && t.ids.includes(r.task_id))
 
@@ -543,6 +550,8 @@ function findMates(legs, task, day) {
 }
 
 function pairMonitorRows(tasks) {
+  // 同一对城市收成一张航线卡。有去有回显示往返；只有单程也合在一起，
+  // 不再因为多一条任务（例如到达时刻差几分钟）再列一张「深圳 → 哈尔滨」。
   const pairKey = (t) => [t.from_code, t.to_code].sort().join('|')
   const byPair = new Map()
   tasks.forEach((t, i) => {
@@ -560,15 +569,17 @@ function pairMonitorRows(tasks) {
   tasks.forEach((t, i) => {
     if (used.has(i)) return
     const key = pairKey(t)
-    if (!bothWays.has(key)) {
-      used.add(i)
-      rows.push({ key: `single-${(t.ids || [t.id]).join('-')}`, bothWays: false, paired: false, legs: [t] })
-      return
-    }
     const members = byPair.get(key).map((j) => tasks[j])
     byPair.get(key).forEach((j) => used.add(j))
-    const paired = members.some((task) => (task.dates || []).some((day) => findMates(members, task, day).length))
-    rows.push({ key: `route-${key}`, bothWays: true, paired, legs: members })
+    const round = bothWays.has(key)
+    const paired = round && members.some((task) => (task.dates || []).some((day) => findMates(members, task, day).length))
+    const dir = `${members[0].from_code}>${members[0].to_code}`
+    rows.push({
+      key: round ? `route-${key}` : `route-${dir}`,
+      bothWays: round,
+      paired,
+      legs: members,
+    })
   })
   return rows
 }
@@ -1020,6 +1031,9 @@ function MailField({ value, onChange, fallback, msg, disabled }) {
 function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
   const rawTasks = data.tasks || []
   const globalMail = String(data?.config?.notify_channels?.email?.receiver || '').trim()
+  const releaseCutoff = String(data?.config?.release_cutoff_date || '2026-12-31').trim()
+  const probeMinutes = Number(data?.config?.unreleased_probe_minutes || 60)
+  const shortCutoff = releaseCutoff.length >= 10 ? releaseCutoff.slice(5).replace('-', '.') : releaseCutoff
   // 「只能查/显示当天及以后（且当日未过起飞时刻）」：过去日期和当日已起飞航班从监控列表及可选池剔除
   const nowMoment = dayjs()
   const todayStr = nowMoment.format('YYYY-MM-DD')
@@ -1527,7 +1541,10 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
         className="task-board"
         title={`监控任务 · ${tasks.length} 班 · ${taskRows.length} 条航线`}
         extra={
-          <Space>
+          <Space wrap>
+            <Tooltip title={`当前海航随心飞已开启抢票至 ${releaseCutoff}；超过该日期的航班将每 ${probeMinutes} 分钟低频探测一次，一旦放票会自动更新截止日并恢复高频监控（可在「监控设置」手动调整）`}>
+              <Tag color="blue" style={{ cursor: 'help', marginInlineEnd: 0 }}>当前开启抢票至 {shortCutoff}</Tag>
+            </Tooltip>
             <Button type="primary" ghost icon={<CompassIcon />} onClick={() => onGo('flights')}>去航线查询添加</Button>
           </Space>
         }
@@ -1662,7 +1679,15 @@ function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
                         <div className="task-flight-meta">
                           {products.map((p) => <Tag key={p} color={p === '666' ? 'gold' : 'purple'} style={{ marginInlineEnd: 0 }}>{p}</Tag>)}
                           <span className="task-flight-price">¥199</span>
-                          {rowOn ? <Tag color="green" style={{ marginInlineEnd: 0 }}>监控中</Tag> : <Tag style={{ marginInlineEnd: 0 }}>已停止</Tag>}
+                          {!rowOn ? (
+                            <Tag style={{ marginInlineEnd: 0 }}>已停止</Tag>
+                          ) : (day && releaseCutoff && day > releaseCutoff) ? (
+                            <Tooltip title={`目前海航开启抢票至 ${shortCutoff}，该日期尚未开启抢票；后台每 ${probeMinutes} 分钟低频探测一次，一旦探测到放票将自动更新截止日并转为高频监控`}>
+                              <Tag color="cyan" style={{ marginInlineEnd: 0 }}>待开启抢票 · 探测中</Tag>
+                            </Tooltip>
+                          ) : (
+                            <Tag color="green" style={{ marginInlineEnd: 0 }}>监控中</Tag>
+                          )}
                           {(t.tiers || []).map((p) => <Tag key={p} style={{ marginInlineEnd: 0 }}>提醒 {p}</Tag>)}
                           {seatBits.map((bit) => <Tag key={bit} color="blue" style={{ marginInlineEnd: 0 }}>{bit}</Tag>)}
                           {stopTag(t)}
@@ -2544,11 +2569,14 @@ function OriginField({ value, onOpen, onChange }) {
   )
 }
 
-function DateStrip({ mode, date, onPick, days = 30 }) {
+function DateStrip({ mode, date, onPick }) {
   const ref = useRef(null)
   const [edge, setEdge] = useState({ left: true, right: false })
   const start = dayjs().startOf('day')
-  const list = Array.from({ length: days }, (_, i) => start.add(i, 'day'))
+  // 一天一格排到航季结束。换季就在眼前时把下一航季也排上，避免只剩几天可滑。
+  const last = onewayStripLastDay(start)
+  const total = Math.max(1, last.diff(start, 'day') + 1)
+  const list = Array.from({ length: total }, (_, i) => start.add(i, 'day'))
   const picked = mode === 'single' && date ? date.format('YYYY-MM-DD') : ''
   const syncEdge = () => {
     const box = ref.current
@@ -2645,11 +2673,6 @@ function DateStrip({ mode, date, onPick, days = 30 }) {
             </button>
           )
         })}
-        <button type="button" className={`date-strip-day is-any${mode === 'range' ? ' is-on' : ''}`} onClick={() => onPick('range')}>
-          <span className="date-strip-week">按区间</span>
-          <span className="date-strip-num">区间</span>
-          <span className="date-strip-md">选一段日期</span>
-        </button>
       </div>
       <button type="button" className="date-strip-nav" aria-label="往后看日期" disabled={edge.right} onClick={() => nudge(1)}>
         <ChevronRightIcon size={16} />
@@ -3139,6 +3162,16 @@ function flightSeasonInfo(today = dayjs()) {
   if (day.isBefore(winter)) return { name: `${year}夏秋航季`, next: winter, nextName: '冬春', days: winter.diff(day, 'day'), tone: 'summer' }
   const nextSummer = lastSundayOf(year + 1, 2)
   return { name: `${year}冬春航季`, next: nextSummer, nextName: '夏秋', days: nextSummer.diff(day, 'day'), tone: 'winter' }
+}
+
+/* 单程日期条的最后一天：当前航季结束前一天。
+   离换季不足 45 天时继续排到下一航季结束，否则滑不了几天又到头。 */
+function onewayStripLastDay(today = dayjs().startOf('day')) {
+  const day = today.startOf('day')
+  const nextChange = flightSeasonInfo(day).next.startOf('day')
+  const seasonAfter = flightSeasonInfo(nextChange).next.startOf('day')
+  const end = nextChange.diff(day, 'day') < 45 ? seasonAfter : nextChange
+  return end.subtract(1, 'day')
 }
 
 function greatCircleKm(a, b) {
@@ -4640,7 +4673,7 @@ function removeFlightRecent(item) {
   return writeFlightRecent(loadFlightRecent().filter((row) => recentKey(row) !== key))
 }
 
-function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightDetail, defaultMail = '' }) {
+function FlightQuery({ msg, onChanged, onGo, priceQuery, releaseCutoff = '2026-12-31', tierBlockRules, flightDetail, defaultMail = '' }) {
   const [form] = Form.useForm()
   const [recent, setRecent] = useState(() => loadFlightRecent())
   const [loading, setLoading] = useState(false)
@@ -4752,6 +4785,9 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
   // 「只能查/显示当天及以后」：日期选择器禁过去；转监控弹窗的日期池同样剔除过去日期
   const todayStr = dayjs().format('YYYY-MM-DD')
   const todayDisabled = (d) => d.isBefore(dayjs(), 'day')
+  // 单程日期条的最后一天，日历也不能选出条外的日子
+  const onewayLastDay = onewayStripLastDay()
+  const onewayDayDisabled = (d) => todayDisabled(d) || d.isAfter(onewayLastDay, 'day')
 
   // 联动选项：watch 筛选条件（含日期模式），debounce 250ms 调 /api/flights/options
   useEffect(() => {
@@ -5644,13 +5680,15 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
   })
 
   const pickOnewayDate = (mode, day) => {
-    form.setFieldsValue(mode === 'single' ? { dateMode: 'single', date: day } : { dateMode: mode })
-    if (mode !== 'range' && routeOrigins.length) form.submit()
+    form.setFieldsValue(mode === 'single'
+      ? { dateMode: 'single', date: day }
+      : { dateMode: 'none', date: null })
+    if (routeOrigins.length) form.submit()
   }
 
   const shiftOnewayDay = (step) => {
     const next = (form.getFieldValue('date') || dayjs()).add(step, 'day')
-    if (next.isBefore(dayjs(), 'day')) return
+    if (next.isBefore(dayjs(), 'day') || next.isAfter(onewayLastDay, 'day')) return
     pickOnewayDate('single', next)
   }
 
@@ -5693,6 +5731,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
               if (last?.to) form.setFieldsValue({ to: matchOriginLabel(linkOpts.to, last.to) || last.to })
             }
             if (key === 'round') form.setFieldsValue({ dateMode: 'range' })
+            else if (key === 'oneway' && form.getFieldValue('dateMode') === 'range') form.setFieldsValue({ dateMode: 'none', date: null })
             else if (!(form.getFieldValue('dateRange')?.length === 2)) form.setFieldsValue({ dateMode: 'none' })
           }}
           items={[
@@ -5825,12 +5864,16 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
               <Col span={24}>
                 {(() => {
                   const season = flightSeasonInfo()
+                  const cutoff = dayjs(releaseCutoff || '2026-12-31')
+                  const showCutoff = cutoff.isValid() && dayjs().isBefore(cutoff.add(1, 'day'), 'day')
+                  const cutoffLabel = showCutoff ? cutoff.format('M.DD') : '12.31'
+                  const nextMonth = showCutoff ? cutoff.add(1, 'day').month() + 1 : 1
                   return (
                     <div className={`season-strip is-${season.tone}${season.days <= 30 ? ' is-soon' : ''}`}>
                       <span>
                         当前 <b>{season.name}</b> · 距 {season.next.format('M-D')} {season.nextName}换季还有 <b>{season.days}</b> 天
                         {season.days <= 30 ? '，换季后的周末按新航季班期扫描' : ''}
-                        {dayjs().isBefore('2027-01-01') ? '。目前海航放票到 12.31，所以 1 月份暂时也可能约不了' : ''}
+                        {showCutoff ? `。目前海航开启抢票至 ${cutoffLabel}，${nextMonth} 月起暂未开启抢票（监控会自动探测并在放票后更新）` : ''}
                       </span>
                       <span className="season-strip-tag">{season.tone === 'summer' ? '夏秋' : '冬春'}</span>
                     </div>
@@ -5992,7 +6035,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
                 {queryKind === 'oneway' && (
                   <DateStrip mode={dateMode} date={watch?.date} onPick={pickOnewayDate} />
                 )}
-                <div className="date-nav" style={{ display: queryKind === 'oneway' && dateMode === 'single' ? undefined : 'none' }}>
+                <div className="date-nav" style={{ display: queryKind === 'oneway' ? undefined : 'none' }}>
                   <Button icon={<ChevronLeftIcon size={12} />} disabled={!watch?.date || !watch.date.isAfter(dayjs(), 'day')} onClick={() => shiftOnewayDay(-1)}>前一天</Button>
                   <Form.Item name="date" noStyle>
                     <DatePicker
@@ -6000,13 +6043,13 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
                       allowClear={false}
                       format={(v) => `${v.format('YYYY-MM-DD')} ${cnWeekday(v.format('YYYY-MM-DD'))}`}
                       placeholder="选择单日"
-                      disabledDate={todayDisabled}
+                      disabledDate={onewayDayDisabled}
                       onChange={(v) => v && pickOnewayDate('single', v)}
                     />
                   </Form.Item>
-                  <Button onClick={() => shiftOnewayDay(1)}>后一天<ChevronRightIcon size={12} /></Button>
+                  <Button disabled={!!watch?.date && !watch.date.isBefore(onewayLastDay, 'day')} onClick={() => shiftOnewayDay(1)}>后一天<ChevronRightIcon size={12} /></Button>
                 </div>
-                <Space direction="vertical" size={8} style={{ width: '100%', display: queryKind === 'round' || dateMode === 'range' ? undefined : 'none' }}>
+                <Space direction="vertical" size={8} style={{ width: '100%', display: queryKind === 'round' ? undefined : 'none' }}>
                   <div className="date-inputs">
                     <Form.Item name="dateRange" noStyle>
                       <DatePicker.RangePicker style={{ width: 260 }} disabledDate={todayDisabled} />
@@ -6034,9 +6077,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
                     })}
                   </div>
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {queryKind === 'round'
-                      ? '从下周末起。去程和回程都按这段日期筛选，航班号只筛去程。'
-                      : '区间只筛选这段日期里能飞的班，不查实时价格。'}
+                    从下周末起。去程和回程都按这段日期筛选，航班号只筛去程。
                   </Typography.Text>
                 </Space>
               </Form.Item>
@@ -6056,7 +6097,7 @@ function FlightQuery({ msg, onChanged, onGo, priceQuery, tierBlockRules, flightD
             <Col xs={24} lg={queryKind === 'oneway' ? 18 : 6}>
               <Form.Item label=" " colon={false}>
                 <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
-                  <Button onClick={() => { form.resetFields(); if (queryKind === 'round') form.setFieldsValue({ dateMode: 'range' }); setResult(null); setWeekendCards(null); setWeekendMeta(null); setWeekendOrigins([]); setErrMsg(''); setPrices(null); setStopsInfo(null); setTimesMap(null); setSeatsInfo(null); setPriceTried(false); setSelKeys([]) }}>清空</Button>
+                  <Button onClick={() => { form.resetFields(); if (queryKind === 'round') form.setFieldsValue({ dateMode: 'range' }); else if (queryKind === 'oneway') form.setFieldsValue({ dateMode: 'none', date: null }); setResult(null); setWeekendCards(null); setWeekendMeta(null); setWeekendOrigins([]); setErrMsg(''); setPrices(null); setStopsInfo(null); setTimesMap(null); setSeatsInfo(null); setPriceTried(false); setSelKeys([]) }}>清空</Button>
                   <Button type="primary" htmlType="submit" loading={loading} icon={<CompassIcon />}>{queryKind === 'weekend' ? weekendScanLabel(weekendOrigins) : '查询'}</Button>
                 </Space>
               </Form.Item>
@@ -6638,6 +6679,7 @@ export default function App() {
             <FlightQuery
               msg={msg}
               priceQuery={data?.config?.price_query}
+              releaseCutoff={data?.config?.release_cutoff_date || '2026-12-31'}
               onChanged={refresh}
               onGo={setTab}
               tierBlockRules={tierBlockRules}

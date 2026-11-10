@@ -569,10 +569,21 @@ def test_low_price_history_keeps_hit_behind_high_prices(api_server):
             "flight": f"HU{8000 + i}",
             "price": 2000 + i,
         }))
+    rows.append(json.dumps({
+        "ts": "2026-10-13T18:10:00",
+        "date": "2026-11-28",
+        "from": "SZX",
+        "to": "PEK",
+        "fare_type": "plus",
+        "flight": "HU7716",
+        "price": 199,
+    }))
     (tmp / "price_history.jsonl").write_text("\n".join(rows) + "\n", encoding="utf-8")
     state = requests.get(f"{base}/api/state", timeout=5).json()
     history = state["history"]
     assert any(r.get("flight") == "UQ2616" and r.get("price") == 199 for r in history)
+    assert all(r.get("task_id") for r in history)
+    assert all(r.get("flight") != "HU7716" for r in history)
     assert all(int(r.get("price") or 0) <= 500 for r in history)
     assert state["stats"]["history_count"] == 50
 
@@ -625,4 +636,43 @@ def test_expired_dates_pruned_and_hidden_in_state(api_server, monkeypatch):
     assert saved[0]["dates"] == ["2026-12-05", "2026-12-31"]
     assert saved[0]["date"] == "2026-12-05"
     assert saved[0]["date_end"] == "2026-12-31"
+
+
+def test_release_cutoff_save_and_auto_advance(api_server, monkeypatch):
+    """抢票开放截止日（默认 2026-12-31）：支持 API 保存，且查到 > 截止日的航班后自动推进截止日。"""
+    base, tmp = api_server
+    state = requests.get(f"{base}/api/state", timeout=5).json()
+    assert state["config"]["release_cutoff_date"] == "2026-12-31"
+    assert state["config"]["unreleased_probe_minutes"] == 60
+
+    # 手动保存截止日与探测间隔
+    r = requests.post(
+        f"{base}/api/release_cutoff",
+        json={"release_cutoff_date": "2026-12-31", "unreleased_probe_minutes": 45},
+        timeout=5,
+    )
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert r.json()["unreleased_probe_minutes"] == 45
+
+    # 模拟查价查到 2027-01-15 已放出航班 -> 自动将 release_cutoff_date 推进到 2027-01-15
+    cfg = json.loads((tmp / "config.json").read_text(encoding="utf-8"))
+    cfg["plus_curl"] = "curl https://app.hnair.com/ticket/lfs/ffl/airLowFareSearch"
+    cfg["price_query"] = {"enabled": True, "min_interval": 2}
+    (tmp / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+
+    monkeypatch.setattr(web_api, "_check_price_throttle", lambda _: 0.0)
+    monkeypatch.setattr(
+        web_api,
+        "fetch_price_status",
+        lambda frm, to, d, fare_type="normal": ("ok", [{"flight": "HU7763", "price": 199, "seats": 5}]),
+    )
+    r2 = requests.get(
+        f"{base}/api/flights/prices",
+        params={"from": "SZX", "to": "HRB", "date": "2027-01-15"},
+        timeout=5,
+    )
+    assert r2.status_code == 200 and r2.json()["ok"] is True
+    state2 = requests.get(f"{base}/api/state", timeout=5).json()
+    assert state2["config"]["release_cutoff_date"] == "2027-01-15"
+
 

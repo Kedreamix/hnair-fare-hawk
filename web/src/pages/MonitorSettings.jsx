@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import {
-  Alert, Button, Card, Col, Collapse, Descriptions, Input, InputNumber,
+  Alert, Button, Card, Col, Collapse, DatePicker, Descriptions, Input, InputNumber,
   Row, Space, Switch, Tag, TimePicker, Tooltip, Typography,
 } from 'antd'
 import dayjs from 'dayjs'
@@ -219,6 +219,12 @@ export default function MonitorSettings({ data, onChanged, msg }) {
   const [signRefresh, setSignRefresh] = useState(cfg.sign_refresh || false)
   const [priceQueryOn, setPriceQueryOn] = useState(cfg.price_query?.enabled !== false)
   const [priceQueryInterval, setPriceQueryInterval] = useState(cfg.price_query?.min_interval || 8)
+  const [releaseCutoff, setReleaseCutoff] = useState(() => dayjs(cfg.release_cutoff_date || '2026-12-31', 'YYYY-MM-DD'))
+  const [probeMinutes, setProbeMinutes] = useState(cfg.unreleased_probe_minutes || 60)
+  useEffect(() => {
+    if (cfg.release_cutoff_date) setReleaseCutoff(dayjs(cfg.release_cutoff_date, 'YYYY-MM-DD'))
+    if (cfg.unreleased_probe_minutes) setProbeMinutes(cfg.unreleased_probe_minutes)
+  }, [cfg.release_cutoff_date, cfg.unreleased_probe_minutes])
   // 监控频率（daemon 轮询间隔范围，秒）：与「实时查价」不同，这里控制后台多久查一次价
   const polling = cfg.polling || {}
   const [pollingForm, setPollingForm] = useState({
@@ -287,6 +293,20 @@ export default function MonitorSettings({ data, onChanged, msg }) {
     } catch (e) { msg.error(e.message) }
   }
 
+  const saveCutoff = async () => {
+    if (!releaseCutoff || !releaseCutoff.isValid()) {
+      msg.error('请选择有效的抢票开放截止日期')
+      return
+    }
+    setBusy('cutoff')
+    try {
+      const dateStr = releaseCutoff.format('YYYY-MM-DD')
+      await api.saveReleaseCutoff(dateStr, probeMinutes)
+      msg.success(`已更新抢票开放截止日：${dateStr}（未开启抢票日期每 ${probeMinutes} 分钟低频探测一次）`)
+      onChanged()
+    } catch (e) { msg.error(e.message) } finally { setBusy('') }
+  }
+
   return (
     <div>
       <TicketSetup cfg={cfg} onChanged={onChanged} msg={msg} />
@@ -321,6 +341,36 @@ export default function MonitorSettings({ data, onChanged, msg }) {
             航班信息（起降时刻/经停/航站楼）的更新走「第三方校正」机制（data/sediment/third_party/），
             不依赖实时查价；如担心被风控可随时关掉本开关，不影响航班信息查询。
           </Typography.Text>
+        </Space>
+      </Card>
+
+      {/* 抢票开放截止日与未开启抢票低频探测 */}
+      <Card style={{ marginTop: 16, marginBottom: 16 }} title="抢票开放截止日（自动探测更新）">
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Space wrap>
+            <Typography.Text strong>当前已开启抢票至</Typography.Text>
+            <DatePicker
+              allowClear={false}
+              format="YYYY-MM-DD"
+              value={releaseCutoff}
+              onChange={(v) => v && setReleaseCutoff(v)}
+            />
+            <Typography.Text type="secondary">待开启抢票日期探测间隔</Typography.Text>
+            <InputNumber
+              min={5}
+              max={720}
+              value={probeMinutes}
+              onChange={(v) => setProbeMinutes(v || 60)}
+              addonAfter="分钟"
+              style={{ width: 140 }}
+            />
+            <Button type="primary" loading={busy === 'cutoff'} onClick={saveCutoff}>保存设置</Button>
+          </Space>
+          <Alert
+            type="info"
+            showIcon
+            message={`截止日（${releaseCutoff ? releaseCutoff.format('YYYY-MM-DD') : '2026-12-31'}）及以前的航班已开启抢票，每轮正常高频监控；超过该日期的航班标记为「待开启抢票」并按设定间隔低频探测，一旦探测到海航放票会自动推进此截止日并恢复高频监控。`}
+          />
         </Space>
       </Card>
 

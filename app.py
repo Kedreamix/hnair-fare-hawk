@@ -44,6 +44,11 @@ DEFAULT_CONFIG = {
     # 实时查价（海航接口）：enabled 为总开关（被风控时可随时关掉，关后 web 查价与 daemon 均跳过）；
     # min_interval 为全局查询最小间隔（秒），防手动连点触发风控。
     "price_query": {"enabled": True, "min_interval": 8},
+    # 海航随心飞当前开启抢票（放票）截止日期：
+    # <= release_cutoff_date 的日期已开启抢票，每轮正常监控；
+    # > release_cutoff_date 的日期处于「待开启抢票」，按 unreleased_probe_minutes 低频探测，一旦查到有航班自动推进截止日。
+    "release_cutoff_date": "2026-12-31",
+    "unreleased_probe_minutes": 60,
     # 通知渠道：飞书（企业自建应用机器人）。app_secret 仅在保存时写入，任何接口不回传。
     # enabled=渠道开关（默认开，配置完整才有效）；urgent_enabled=该渠道加急开关（默认开）。
     "feishu": {"app_id": "", "app_secret": "", "receiver": "", "enabled": True, "urgent_enabled": True},
@@ -292,18 +297,20 @@ def expand_task_dates(task: Dict[str, Any]) -> List[str]:
     return out
 
 
-def _task_key(from_code: str, to_code: str, flight_no: Any, dep_time: Any, arr_time: Any) -> str:
-    """任务分组键：出发|到达|航班号|起飞|到达。
+def _task_key(from_code: str, to_code: str, flight_no: Any, dep_time: Any, arr_time: Any = "") -> str:
+    """任务分组键：出发|到达|航班号|起飞。
 
-    - 不同航班号/起降时刻各自成任务（穷举，不按航线合并）；
-    - 无航班号的旧式条目退化为按航线合并（向后兼容旧添加入口）。
+    到达时刻不参与分组。同一航班、同一起飞，到达只差几分钟（班期修正）
+    仍并进原来那条，避免监控列表再拆出一张相同航线。
+    不同航班号或不同起飞时刻各自成任务。
+    无航班号的旧式条目退化为按航线合并（向后兼容旧添加入口）。
     """
+    del arr_time  # 保留参数，调用方仍会传入；到达时刻只作展示快照
     return "|".join([
         from_code,
         to_code,
         str(flight_no or "").strip().upper(),
         str(dep_time or "").strip(),
-        str(arr_time or "").strip(),
     ])
 
 
@@ -358,9 +365,10 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
     """从「航线查询」批量创建监控任务（当前只监控 199 元优惠价档）。
 
     规则：
-    - 「一个航班 = 一条任务」：按 出发|到达|航班号|起飞|到达 分组，把一天内不同时间起飞的
-      航班全部穷举成独立监控任务（不按航线合并，避免不同时刻的航班被并成一条导致漏提醒）；
-    - 同一分组（同航班号且起降时刻相同）的多个可飞日期并入同一条任务；
+    - 「一个航班 = 一条任务」：按 出发|到达|航班号|起飞 分组。一天内不同时间起飞的
+      航班各自独立（不按航线合并，避免不同时刻的航班被并成一条导致漏提醒）；
+    - 到达时刻不参与分组：同一航班起飞相同、到达只差几分钟时并入已有任务；
+    - 同一分组的多个可飞日期并入同一条任务；
     - 合并/新建统一为 fare_type=plus、target_price=199（普通票价档暂不监控）；
     - 快照字段（代表航班/时刻/经停/档位）用于列表展示，daemon 会按 task.flight_no 过滤航班，
       只提醒任务对应的那个航班，避免同航线多个任务重复提醒。
@@ -406,7 +414,7 @@ def add_tasks_batch(items: List[Dict[str, Any]]) -> Dict[str, Any]:
         if isinstance(stop, dict) and (stop.get("kind") or stop.get("stops_detail")):
             snapshot["stop"] = stop
 
-        # 分组键含航班号+起降时刻：一天内不同时间的航班各自成为独立监控任务
+        # 分组键含航班号+起飞时刻，不含到达：同一航班到达修正几分钟仍并入原任务
         key = _task_key(from_code, to_code, snapshot["flight_no"], snapshot["dep_time"], snapshot["arr_time"])
 
         if key in idx:
@@ -858,6 +866,47 @@ def save_price_query(enabled: bool, min_interval: int) -> None:
     _write_json(CONFIG_PATH, config)
 
 
+def save_release_cutoff(cutoff_date: str, probe_minutes: int | None = None) -> tuple[str, int]:
+    """保存抢票开放截止日（YYYY-MM-DD）及未开启抢票日期的低频探测间隔（分钟，5~720）。"""
+    raw = str(cutoff_date or "").strip()
+    try:
+        datetime.strptime(raw, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("截止日期格式应为 YYYY-MM-DD") from exc
+    config = load_config()
+    config["release_cutoff_date"] = raw
+    if probe_minutes is not None:
+        try:
+            mins = max(5, min(720, int(probe_minutes)))
+        except (TypeError, ValueError):
+            mins = int(config.get("unreleased_probe_minutes") or 60)
+        config["unreleased_probe_minutes"] = mins
+    else:
+        mins = int(config.get("unreleased_probe_minutes") or 60)
+    _write_json(CONFIG_PATH, config)
+    return raw, mins
+
+
+def advance_release_cutoff(observed_date: str) -> tuple[bool, str, str]:
+    """当探测到更晚日期已放出航班时，自动推进 config.json 中的 release_cutoff_date。
+
+    返回 (是否发生推进, 旧截止日, 新截止日)。
+    """
+    obs = str(observed_date or "").strip()
+    try:
+        datetime.strptime(obs, "%Y-%m-%d")
+    except ValueError:
+        cur = str(load_config().get("release_cutoff_date") or DEFAULT_CONFIG["release_cutoff_date"])
+        return False, cur, cur
+    config = load_config()
+    cur = str(config.get("release_cutoff_date") or DEFAULT_CONFIG["release_cutoff_date"]).strip()
+    if obs > cur:
+        config["release_cutoff_date"] = obs
+        _write_json(CONFIG_PATH, config)
+        return True, cur, obs
+    return False, cur, cur
+
+
 def save_polling(day_min_sec=None, day_max_sec=None, night_min_sec=None, night_max_sec=None) -> None:
     """保存监控频率（daemon 每轮查询的随机间隔范围，秒）。
 
@@ -1041,8 +1090,11 @@ def read_price_history(line_count: int = 50) -> List[Dict[str, Any]]:
     return records
 
 
-def read_low_price_history(limit: int = 50, max_price: int = 500) -> List[Dict[str, Any]]:
-    """从文件末尾往前收集价格不超过 max_price 的记录，最多 limit 条，按时间正序返回。"""
+def read_low_price_history(limit: int = 50, max_price: int = 500, owned_only: bool = False) -> List[Dict[str, Any]]:
+    """从文件末尾往前收集价格不超过 max_price 的记录，最多 limit 条，按时间正序返回。
+
+    owned_only 时跳过没有 task_id 的记录。那些是同一次查询带回的其他航班，不是正在监控的班次。
+    """
     if limit <= 0 or not HISTORY_PATH.exists():
         return []
     try:
@@ -1064,6 +1116,8 @@ def read_low_price_history(limit: int = 50, max_price: int = 500) -> List[Dict[s
         if isinstance(price, bool) or not isinstance(price, (int, float)):
             continue
         if price > max_price:
+            continue
+        if owned_only and not str(record.get("task_id") or "").strip():
             continue
         picked.append(record)
         if len(picked) >= limit:
@@ -1137,6 +1191,8 @@ def load_config() -> Dict[str, Any]:
         config["price_query"] = dict(DEFAULT_CONFIG["price_query"])
     config["price_query"].setdefault("enabled", DEFAULT_CONFIG["price_query"]["enabled"])
     config["price_query"].setdefault("min_interval", DEFAULT_CONFIG["price_query"]["min_interval"])
+    config.setdefault("release_cutoff_date", DEFAULT_CONFIG["release_cutoff_date"])
+    config.setdefault("unreleased_probe_minutes", DEFAULT_CONFIG["unreleased_probe_minutes"])
 
     config.setdefault("feishu", dict(DEFAULT_CONFIG["feishu"]))
 
