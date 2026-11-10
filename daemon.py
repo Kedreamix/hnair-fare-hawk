@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 import portalocker
 
-from app import task_email_for
+from app import prune_expired_tasks, task_email_for
 from backend.channels import apply_task_email, build_confirm_card, hna_jump_block, notify_channels
 import backend.feishu_ws as feishu_ws  # noqa: E402
 from backend.fetcher import TokenExpiredError, fetch_price_status
@@ -607,7 +607,7 @@ def run_one_round(state_mgr: AlertStateManager) -> bool:
     if not (config.get("price_query") or {}).get("enabled", True):
         append_log("实时查价已关闭（防风控），本轮跳过价格查询；可在「监控管理」重新开启。")
         return False
-    all_tasks = load_tasks()
+    all_tasks = prune_expired_tasks()
     tasks = [task for task in all_tasks if task.get("enabled", True)]
     if not tasks:
         append_log("当前没有监控任务。")

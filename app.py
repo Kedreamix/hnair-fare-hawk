@@ -582,6 +582,68 @@ def _set_email_overrides(task: Dict[str, Any], mapping: Dict[str, str]) -> None:
         task.pop("notify_email_by_date", None)
 
 
+def prune_expired_tasks(today: str | None = None) -> List[Dict[str, Any]]:
+    """清理 tasks.json 中已过期（早于 today）的监控日期；若某任务所有日期均已过期则移除该任务。
+
+    同时清理已不在监控日期中的 disabled_dates、notify_email_by_date、round_pairs（含配对目标日期已过期的项）。
+    返回清理后的任务列表。
+    """
+    today_str = str(today or date.today().isoformat()).strip()
+    data = _read_json(TASKS_PATH, DEFAULT_TASKS)
+    raw_tasks = data.get("tasks", [])
+    if not isinstance(raw_tasks, list):
+        return []
+
+    changed = False
+    kept_tasks: List[Dict[str, Any]] = []
+    for task in raw_tasks:
+        if not isinstance(task, dict):
+            changed = True
+            continue
+        all_dates = expand_task_dates(task)
+        if not all_dates:
+            # 无任何日期的异常旧任务原样保留，交由后续处理
+            kept_tasks.append(task)
+            continue
+        valid_dates = [d for d in all_dates if d >= today_str]
+        if not valid_dates:
+            changed = True
+            continue
+        if valid_dates != all_dates or task.get("dates") != valid_dates or task.get("date") != valid_dates[0] or task.get("date_end") != valid_dates[-1]:
+            task = dict(task)
+            if "dates" in task or len(all_dates) != len(valid_dates):
+                task["dates"] = valid_dates
+            task["date"] = valid_dates[0]
+            task["date_end"] = valid_dates[-1]
+            valid_set = set(valid_dates)
+            if "disabled_dates" in task:
+                old_disabled = [str(d).strip() for d in (task.get("disabled_dates") or []) if str(d).strip()]
+                new_disabled = sorted(set(old_disabled) & valid_set)
+                task["disabled_dates"] = new_disabled
+                if not (valid_set - set(new_disabled)):
+                    task["enabled"] = False
+            if "notify_email_by_date" in task:
+                mapping = {d: addr for d, addr in _email_overrides(task).items() if d in valid_set}
+                _set_email_overrides(task, mapping)
+            if "round_pairs" in task:
+                pairs = _norm_round_pairs(task.get("round_pairs"))
+                cleaned_pairs: Dict[str, Any] = {}
+                for day, info in pairs.items():
+                    if day not in valid_set:
+                        continue
+                    items = [it for it in _pair_items(info) if it["mate_date"] >= today_str]
+                    if items:
+                        cleaned_pairs[day] = items[0] if len(items) == 1 else items
+                _set_round_pairs(task, cleaned_pairs, valid_set)
+            changed = True
+        kept_tasks.append(task)
+
+    if changed:
+        data["tasks"] = kept_tasks
+        _write_json(TASKS_PATH, data)
+    return kept_tasks
+
+
 def task_email_for(task: Dict[str, Any], day: str) -> str:
     """命中某一天时用的收件人：当天覆盖，否则航班默认，都没有则空（调用方用全局收件人）。"""
     overrides = _email_overrides(task)

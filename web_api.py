@@ -266,14 +266,17 @@ def _sanitize_config(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _today_str() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
 def _build_state() -> Dict[str, Any]:
-    from app import TASKS_PATH, read_last_log_lines as _read_logs
+    from app import prune_expired_tasks, read_last_log_lines as _read_logs
 
     config = load_config()
-    with open(TASKS_PATH, "r", encoding="utf-8") as f:
-        raw = f.read().strip()
-    tasks_data = json.loads(raw) if raw else {"tasks": []}
-    tasks = tasks_data.get("tasks", [])
+    today_str = _today_str()
+    tasks = prune_expired_tasks(today=today_str)
+    task_rows = _build_task_rows(tasks, today=today_str)
 
     recent = read_price_history(50)
     history = read_low_price_history(50)
@@ -287,7 +290,7 @@ def _build_state() -> Dict[str, Any]:
 
     return {
         "config": _sanitize_config(config),
-        "tasks": _build_task_rows(tasks),
+        "tasks": task_rows,
         # 多通道通知历史（成功/失败都记录，最多 50 条）
         "notification_history": read_notify_history(50),
         # 飞书加急卡片确认回执（用户在卡片上点「确认已处理/忽略」后的记录）
@@ -313,8 +316,8 @@ def _build_state() -> Dict[str, Any]:
             for r in history
         ],
         "stats": {
-            "task_count": len(tasks),
-            "enabled_count": sum(1 for t in tasks if t.get("enabled", True)),
+            "task_count": len(task_rows),
+            "enabled_count": sum(1 for r in task_rows if r.get("enabled", True)),
             "hit_count_24h": hit_count,
             "history_count": len(recent),
         },
@@ -387,15 +390,17 @@ def _weekdays(dates: List[str]) -> List[int]:
     return days
 
 
-def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _build_task_rows(tasks: List[Dict[str, Any]], today: str | None = None) -> List[Dict[str, Any]]:
     """任务列表按「出发|到达|航班号|起降时刻」分组合并展示。
 
     - 同一航班（同航班号且起降时刻相同）的多个监控日期合并成一条（dates 并集、档位并集）；
     - 一天内不同时间的航班各自独立成行（穷举，不按航线合并）；
     - 快照字段（代表航班/时刻/经停/档位）来自该分组最近一条带快照的任务，
       可被观测库中更新的实时事实（起降时刻/航站楼/经停）覆盖；
-    - ids 为分组下所有底层任务 id，批量启停/删除以此为单位。
+    - ids 为分组下所有底层任务 id，批量启停/删除以此为单位；
+    - today 非空时：自动剔除早于 today 的过期日期；若分组内所有日期均已过期，则不展示该分组。
     """
+    today_str = str(today or "").strip()
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for t in tasks:
         fc = str(t.get("from_code", "") or "").strip().upper()
@@ -410,7 +415,11 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for group in grouped.values():
         from_code = str(group[0]["from_code"]).upper()
         to_code = str(group[0]["to_code"]).upper()
-        dates = sorted({d for t in group for d in expand_task_dates(t)})
+        all_dates = sorted({d for t in group for d in expand_task_dates(t)})
+        dates = [d for d in all_dates if d >= today_str] if today_str else all_dates
+        if today_str and all_dates and not dates:
+            continue
+        valid_date_set = set(dates)
         products = sorted({p for t in group for p in str(t.get("product", "") or "").split("/") if p})
         snap = next((t for t in reversed(group) if t.get("flight_no")), group[0])
         flight_no = str(snap.get("flight_no", "") or "").strip()
@@ -440,6 +449,14 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             recs = sediment.query(from_city=from_city, to_city=to_city, limit=1)
             if recs:
                 products = [p for p in str(recs[0].get("product", "") or "").split("/") if p]
+        disabled_dates = sorted({
+            str(d).strip() for t in group for d in (t.get("disabled_dates") or [])
+            if str(d).strip() and (not valid_date_set or str(d).strip() in valid_date_set)
+        })
+        if dates:
+            row_enabled = any(bool(t.get("enabled", True)) for t in group) and bool(valid_date_set - set(disabled_dates))
+        else:
+            row_enabled = any(bool(t.get("enabled", True)) for t in group)
         rows.append({
             "id": group[0].get("id", ""),
             "ids": [t.get("id", "") for t in group],
@@ -487,7 +504,7 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     t.get("notify_email_by_date").items()
                     if isinstance(t.get("notify_email_by_date"), dict) else ()
                 )
-                if str(day).strip() and str(addr).strip()
+                if str(day).strip() and str(addr).strip() and (not valid_date_set or str(day).strip() in valid_date_set)
             },
             "round_pairs": {
                 str(day).strip(): info
@@ -495,12 +512,10 @@ def _build_task_rows(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 for day, info in (
                     t.get("round_pairs").items() if isinstance(t.get("round_pairs"), dict) else ()
                 )
-                if str(day).strip() and isinstance(info, dict)
+                if str(day).strip() and isinstance(info, (dict, list)) and (not valid_date_set or str(day).strip() in valid_date_set)
             },
-            "enabled": any(bool(t.get("enabled", True)) for t in group),
-            "disabled_dates": sorted({
-                str(d).strip() for t in group for d in (t.get("disabled_dates") or []) if str(d).strip()
-            }),
+            "enabled": row_enabled,
+            "disabled_dates": disabled_dates,
             "created_at": min((str(t.get("created_at") or "") for t in group), default=""),
         })
     return rows

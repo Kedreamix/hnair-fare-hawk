@@ -1015,10 +1015,26 @@ function MailField({ value, onChange, fallback, msg, disabled }) {
 }
 
 function Tasks({ data, onChanged, msg, onGo, onOpenDetail, tierBlockRules }) {
-  const tasks = data.tasks || []
+  const rawTasks = data.tasks || []
   const globalMail = String(data?.config?.notify_channels?.email?.receiver || '').trim()
-  // 「只能查/显示当天及以后」：过去日期从所有可选池剔除（编辑弹窗日期选项、档位联动、兜底池）
+  // 「只能查/显示当天及以后」：过去日期从监控列表和所有可选池剔除（编辑弹窗日期选项、档位联动、兜底池）
   const todayStr = dayjs().format('YYYY-MM-DD')
+  const tasks = useMemo(() => (
+    rawTasks
+      .map((t) => {
+        const allDates = Array.isArray(t.dates) ? t.dates : []
+        const validDates = allDates.filter((d) => d >= todayStr)
+        if (allDates.length && !validDates.length) return null
+        if (validDates.length === allDates.length) return t
+        return {
+          ...t,
+          dates: validDates,
+          date: validDates[0] || '',
+          date_end: validDates[validDates.length - 1] || '',
+        }
+      })
+      .filter(Boolean)
+  ), [rawTasks, todayStr])
 
   const saveDayMail = async (task, day, notifyEmail) => {
     await api.updateTasks(task.ids || [task.id], {

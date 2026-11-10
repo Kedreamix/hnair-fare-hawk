@@ -38,6 +38,7 @@ def api_server(tmp_path, monkeypatch):
     import importlib
 
     app_mod.ensure_data_files()
+    monkeypatch.setattr(web_api, "_today_str", lambda: "2026-09-01")
 
     # web_api 用已加载的 app 函数，所以直接起服务即可
     server = web_api.ThreadingHTTPServer(("127.0.0.1", 0), web_api.Handler)
@@ -574,3 +575,54 @@ def test_low_price_history_keeps_hit_behind_high_prices(api_server):
     assert any(r.get("flight") == "UQ2616" and r.get("price") == 199 for r in history)
     assert all(int(r.get("price") or 0) <= 500 for r in history)
     assert state["stats"]["history_count"] == 50
+
+
+def test_expired_dates_pruned_and_hidden_in_state(api_server, monkeypatch):
+    """已过期（早于今天）的监控日期不再返回并从 tasks.json 清理；全部日期过期的任务整条移除。"""
+    base, tmp = api_server
+    monkeypatch.setattr(web_api, "_today_str", lambda: "2026-11-11")
+    payload = {
+        "items": [
+            {
+                "from_code": "SZX",
+                "to_code": "HRB",
+                "dates": ["2026-10-31", "2026-12-05", "2026-12-31"],
+                "product": "666/2666",
+                "flight_no": "HU7763",
+                "dep_time": "06:40",
+                "arr_time": "14:00",
+                "notify_email": "default@example.com",
+            },
+            {
+                "from_code": "SZX",
+                "to_code": "PEK",
+                "dates": ["2026-10-20", "2026-11-01"],
+                "product": "666",
+                "flight_no": "HU7716",
+                "dep_time": "21:10",
+                "arr_time": "00:25",
+            },
+        ]
+    }
+    r = requests.post(f"{base}/api/tasks/batch", json=payload, timeout=5)
+    assert r.status_code == 200 and r.json()["created"] == 2
+
+    state = requests.get(f"{base}/api/state", timeout=5).json()
+    # 全过期的 SZX->PEK 整条不显示，SZX->HRB 的 2026-10-31 被剔除
+    assert len(state["tasks"]) == 1
+    row = state["tasks"][0]
+    assert row["flight_no"] == "HU7763"
+    assert row["dates"] == ["2026-12-05", "2026-12-31"]
+    assert row["date"] == "2026-12-05"
+    assert row["date_end"] == "2026-12-31"
+    assert state["stats"]["task_count"] == 1
+    assert state["stats"]["enabled_count"] == 1
+
+    # 底层 tasks.json 也已清理掉过期日期与全过期任务
+    saved = json.loads((tmp / "tasks.json").read_text(encoding="utf-8"))["tasks"]
+    assert len(saved) == 1
+    assert saved[0]["flight_no"] == "HU7763"
+    assert saved[0]["dates"] == ["2026-12-05", "2026-12-31"]
+    assert saved[0]["date"] == "2026-12-05"
+    assert saved[0]["date_end"] == "2026-12-31"
+
